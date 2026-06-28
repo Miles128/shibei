@@ -1,0 +1,57 @@
+# Shibei 配置
+
+# === ChromaDB / BM25 ===
+chroma:
+  path: ~/.shibei/db          # 数据存储路径
+  collection: knowledge_base        # collection 名称
+  search_engine: bm25               # bm25（零依赖）| vector（需模型）| hybrid
+
+# === 嵌入模型 ===
+embedding:
+  model: moka-ai/m3e-base           # 中文 768d，可换 bge-large-zh-v1.5 等
+  device: cpu                        # cpu | mps (Mac) | cuda
+  hf_endpoint: https://hf-mirror.com  # 国内用镜像，海外删掉这行
+
+# === 数据源 ===
+sources:
+  - ~/Documents/notes               # 扫描这些目录下的 *.md
+  # - ~/Documents/articles
+
+# === 分块 ===
+chunking:
+  max_chars: 800                    # 每块最大字符数
+  split_pattern: "\n(?=## )"        # 按 ## 标题切分
+  overlap: 0                        # 相邻 chunk 重叠字符数（0=不重叠，推荐 50-100）
+  parent_window: 0                  # parent-child 模式：parent 包含 N 个 child（0=禁用，推荐 2-3）
+  sentence_boundaries: "。！？!?\n"  # 句子边界字符（用于不切断词的切分）
+
+# === 标签规则 ===
+# 按顺序匹配，命中即停止。检查文件路径 + 内容前 500 字。
+tagging:
+  rules:
+    - pattern: "(面试|复盘|interview)"
+      tag: interview
+    - pattern: "(AI|人工智能|大模型|机器学习)"
+      tag: ai
+    - pattern: "(金融|银行|风控|finance)"
+      tag: finance
+    - pattern: "(求职|job)"
+      tag: job-search
+    - pattern: "(日记|daily)"
+      tag: daily-summary
+    - pattern: ".*"
+      tag: personal-note           # 兜底
+
+# === LLM 增强（可选，默认关闭） ===
+# 不配置也能用；开启后 dreaming、查询改写、事实提取会更强
+# 只支持联网大模型（OpenAI-compatible API），需要填写 api_key
+llm:
+  enabled: false
+  provider: openai-compatible      # openai | openai-compatible
+  model: deepseek-chat             # 也可换 gpt-4o-mini、deepseek-reasoner 等
+  base_url: https://api.deepseek.com/v1
+  api_key: ""                      # 必填：DeepSeek/OpenAI 的 key
+  temperature: 0.3
+  max_tokens: 1024
+  timeout: 30.0
+  system_prompt: "You are a helpful assistant for a Chinese personal knowledge base."
