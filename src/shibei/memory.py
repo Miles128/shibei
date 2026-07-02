@@ -5,6 +5,10 @@
 - BM25 全文搜索
 - 版本链（supersedes）：新事实替代旧事实时保留历史
 
+记忆与文档知识库存放在同一个数据库（fts5.db），仅通过 source/tags 区分来源：
+- 文档 chunk 的 source 为文件路径，tags 为导入时指定的标签
+- 记忆的 source 默认为 "agent"，tags 可携带分类/来源信息
+
 表结构：
     memories(rowid INTEGER PK AUTOINCREMENT, id TEXT UUID, fact, ...)
     memories_fts(rowid INTEGER PK, fact, tags, category)
@@ -78,7 +82,8 @@ class MemoryStore(AbstractMemoryStore):
         """
         self.db_dir = Path(db_path)
         self.db_dir.mkdir(parents=True, exist_ok=True)
-        self.db_file = self.db_dir / "memories.db"
+        # 与文档知识库共用同一个数据库文件，通过 source/tags 区分来源
+        self.db_file = self.db_dir / "fts5.db"
         self._init_db()
 
     def _init_db(self):
@@ -131,6 +136,12 @@ class MemoryStore(AbstractMemoryStore):
         memory_id = str(uuid.uuid4())
         created_at = created_at or self._now()
 
+        # 默认来源标签：未指定时标记为 agent，并把 source 纳入 tags 便于统一检索
+        source = (source or "").strip() or "agent"
+        tag_set = {t.strip() for t in (tags or "").split(",") if t.strip()}
+        tag_set.add(source)
+        tags = ",".join(sorted(tag_set))
+
         # 查找最相似的现有记忆
         supersedes = None
         similar = self._find_most_similar(fact, category, limit=1)
@@ -149,8 +160,8 @@ class MemoryStore(AbstractMemoryStore):
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    memory_id, fact, category or "", source or "",
-                    tags or "", created_at, expires_at or "",
+                    memory_id, fact, category or "", source,
+                    tags, created_at, expires_at or "",
                     supersedes or "", "",
                 ),
             )

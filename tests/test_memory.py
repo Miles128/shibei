@@ -17,7 +17,9 @@ def test_add_and_get(store):
     r = store.add("用户喜欢使用 Python 做后端开发", category="preference", tags="tech,python")
     assert r["fact"] == "用户喜欢使用 Python 做后端开发"
     assert r["category"] == "preference"
-    assert r["tags"] == "tech,python"
+    # source 默认加入 tags，便于与文档知识库统一检索
+    assert r["source"] == "agent"
+    assert set(r["tags"].split(",")) == {"agent", "python", "tech"}
     assert r["id"]
 
     got = store.get(r["id"])

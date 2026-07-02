@@ -52,9 +52,6 @@ class Shibei:
         llm_client=None,
     ) -> dict:
         from .dreamer import dream
-        # 默认使用 Shibei 自身配置的 LLM；MCP 透传 llm_config 时可覆盖
-        if llm_client is None:
-            llm_client = self.llm
         return dream(
             self.config.db_path_expanded,
             format=format,

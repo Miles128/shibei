@@ -172,7 +172,7 @@ TOOLS = {
     },
     "shibei_dream": {
         "handler": _handle_dream,
-        "description": "知识库 dreaming — 发现隐藏连接、跨文档关联、主题模式，并自动整理：清理过期记忆、压缩旧短期记忆、合并相似 chunk。默认使用 Shibei 自身配置的 LLM 自动完成压缩与合并；可通过 llm_config 透传外部 Agent 的 LLM 进行覆盖；仅当没有任何 LLM 可用时退化为 skill 形式，只输出候选建议。默认精简输出（stats+insights+housekeeping统计），需要完整 cross_references 时用 full 格式。",
+        "description": "知识库 dreaming — 发现隐藏连接、跨文档关联、主题模式，并自动整理：清理过期记忆、识别可压缩记忆候选、发现相似 chunk 候选。Shibei 自身不调用 LLM；若传入 llm_config，则使用外部 Agent 的 LLM 自动完成压缩与合并；若未传入，则退化为 skill 形式，只输出候选建议。默认精简输出（stats+insights+housekeeping统计），需要完整 cross_references 时用 full 格式。",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -194,7 +194,7 @@ TOOLS = {
                 },
                 "llm_config": {
                     "type": "object",
-                    "description": "可选：外部 Agent 透传的 LLM 配置，用于覆盖 Shibei 自身 LLM。提供时 dreaming 使用该配置自动压缩旧记忆并合并相似 chunk；未提供时优先使用 Shibei 自身配置的 LLM，未配置时才返回候选建议",
+                    "description": "可选：外部 Agent 透传的 LLM 配置。提供时 dreaming 使用该 LLM 自动压缩旧记忆并合并相似 chunk；未提供时 Shibei 自身不调用 LLM，只返回候选建议",
                     "properties": {
                         "api_key": {"type": "string", "description": "LLM API key"},
                         "model": {"type": "string", "default": "deepseek-chat", "description": "模型名"},

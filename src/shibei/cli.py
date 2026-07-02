@@ -154,7 +154,7 @@ def cmd_dream(args):
         housekeeping = {}
         if getattr(args, "apply_consolidation", False):
             housekeeping["consolidate_apply"] = True
-    result = brain.dream(housekeeping=housekeeping, llm_client=brain.llm)
+    result = brain.dream(housekeeping=housekeeping)
 
     if result["status"] == "empty":
         print("知识库为空，先运行 shibei import")

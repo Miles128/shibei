@@ -7,15 +7,12 @@ description: "Executes the Shibei knowledge-base dreaming process via MCP to dis
 
 This skill guides an external AI system through the Shibei "dreaming" workflow using the Model Context Protocol (MCP).
 
-`shibei_dream` now **automatically performs housekeeping** by default:
+`shibei_dream` performs housekeeping in two modes:
 
-- Cleans expired memories (always).
-- Compresses old short-term memories when an LLM is available.
-- Merges similar chunks when an LLM is available.
+- **Skill / advisory mode (default)**: Shibei never calls an LLM itself. It discovers patterns and returns candidates (`compressible_candidates`, `clusters`) for the external AI agent to review and act on.
+- **Auto mode**: If the external AI agent provides `llm_config`, Shibei uses that LLM to auto-compress old memories and auto-merge similar chunks.
 
-If Shibei already has its own LLM configured, `shibei_dream` uses it to apply compression and consolidation directly.
-If `llm_config` is provided, it overrides Shibei's own LLM.
-Only when **no LLM is available** does `shibei_dream` fall back to **advisory / skill mode** and return candidates for manual review.
+Shibei itself does not configure or use its own LLM.
 
 ## 1. Activation Parameters
 
@@ -38,7 +35,7 @@ All dreaming calls go through the `shibei_dream` MCP tool.
 | `format` | `"brief" \| "full"` | `"brief"` | `brief` returns stats, insights, and housekeeping summaries (recommended for MCP). `full` adds `cross_references`, `patterns`, and detailed cluster chunks. |
 | `persist` | `boolean` | `true` | Whether Shibei persists the result for future diff comparisons. |
 | `housekeeping` | `boolean \| object` | `true` | `false` disables housekeeping. `true` uses defaults. Pass an object to override thresholds, e.g. `{"compress_max_age_days": 30, "consolidate_threshold": 0.6}`. |
-| `llm_config` | `object` | omitted | Optional LLM config forwarded by the external AI to override Shibei's own LLM. When omitted, `shibei_dream` falls back to Shibei's configured LLM; if none is configured, it returns candidates only. |
+| `llm_config` | `object` | omitted | Optional LLM config forwarded by the external AI agent. When provided, Shibei uses that LLM to auto-compress memories and auto-merge similar chunks. When omitted, Shibei returns candidates only and never calls an LLM itself. |
 
 ### Example MCP Call (Auto Mode)
 
@@ -84,7 +81,7 @@ Before any reasoning about "my memory" or the user's personal knowledge base, yo
 
 Call `shibei_dream(format="brief", persist=true, housekeeping=true)`.
 
-If Shibei does not have its own LLM configured and you want to force auto-apply, include `llm_config` with the host AI's API credentials. Otherwise, Shibei will use its own LLM automatically.
+By default, Shibei returns candidates and lets the external AI agent decide what to do. If you want Shibei to auto-apply compression and consolidation on your behalf, include `llm_config` with the host AI's API credentials.
 
 Validate the response:
 - If `status` is `"empty"`, stop and inform the user the knowledge base is empty.
@@ -97,18 +94,18 @@ Read the returned fields:
 - `insights[]` — high-level observations
 - `housekeeping.memory.expired_deleted` — automatically cleaned memories
 
-When an LLM is available (Shibei's own or via `llm_config`):
+When `llm_config` was provided:
 - `housekeeping.memory.compress` — compression result (may include `compressed_count`).
 - `housekeeping.consolidation.applied` — whether similar chunks were merged.
 - `housekeeping.consolidation.removed` / `inserted` — how many chunks were removed/inserted.
 
-When no LLM is available:
+When `llm_config` was omitted:
 - `housekeeping.memory.compressible_candidates[]` — old memory candidates for compression.
 - `housekeeping.consolidation.cluster_count` and `clusters[]` — overlapping chunk candidates.
 
-### Step 3 — Act on Memory Compression Candidates (Only When No LLM Available)
+### Step 3 — Act on Memory Compression Candidates (Only When No `llm_config`)
 
-If an LLM is available (Shibei's own or via `llm_config`), Shibei has already compressed old memories; skip this step.
+If `llm_config` was provided, Shibei has already compressed old memories; skip this step.
 
 Otherwise, for each `compressible_candidate`:
 1. Read its `fact`, `tags`, `category`, and `created_at`.
@@ -117,9 +114,9 @@ Otherwise, for each `compressible_candidate`:
 4. Call `shibei_update_memory` with `memory_id` and the new `fact` (and optionally updated `tags`).
 5. Skip `long_term` and `personal` memories.
 
-### Step 4 — Act on Similar Chunk Clusters (Only When No LLM Available)
+### Step 4 — Act on Similar Chunk Clusters (Only When No `llm_config`)
 
-If an LLM is available (Shibei's own or via `llm_config`), Shibei has already merged similar chunks; skip this step.
+If `llm_config` was provided, Shibei has already merged similar chunks; skip this step.
 
 Otherwise, for each cluster with `size >= 2`:
 1. Read the `chunks[]` array to understand the overlapping content. Each chunk exposes `_rowid`.
