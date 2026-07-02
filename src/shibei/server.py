@@ -55,29 +55,10 @@ def _handle_list_sources(brain, args):
 
 
 def _handle_dream(brain, args):
-    llm_client = None
-    llm_config = args.get("llm_config")
-    if llm_config:
-        from .llm import LLMClient, LLMConfig
-
-        cfg = LLMConfig(
-            enabled=True,
-            api_key=llm_config.get("api_key", ""),
-            model=llm_config.get("model", "deepseek-chat"),
-            base_url=llm_config.get(
-                "base_url", "https://api.deepseek.com/v1"
-            ),
-            temperature=llm_config.get("temperature", 0.3),
-            max_tokens=llm_config.get("max_tokens", 1024),
-            timeout=llm_config.get("timeout", 30.0),
-        )
-        llm_client = LLMClient(cfg)
-
     return brain.dream(
         format=args.get("format", "brief"),
         persist=args.get("persist", True),
         housekeeping=args.get("housekeeping"),
-        llm_client=llm_client,
     )
 
 
@@ -172,7 +153,7 @@ TOOLS = {
     },
     "shibei_dream": {
         "handler": _handle_dream,
-        "description": "知识库 dreaming — 发现隐藏连接、跨文档关联、主题模式，并自动整理：清理过期记忆、识别可压缩记忆候选、发现相似 chunk 候选。Shibei 自身不调用 LLM；若传入 llm_config，则使用外部 Agent 的 LLM 自动完成压缩与合并；若未传入，则退化为 skill 形式，只输出候选建议。默认精简输出（stats+insights+housekeeping统计），需要完整 cross_references 时用 full 格式。",
+        "description": "知识库 dreaming — 发现隐藏连接、跨文档关联、主题模式，并执行零 LLM 依赖的整理：清理过期记忆、识别可压缩记忆候选、发现相似 chunk 候选。Shibei 自身不调用 LLM；具体压缩/合并由外部 Agent 判断并调用 shibei_update_memory / shibei_apply_consolidation 执行。默认精简输出（stats+insights+housekeeping统计），需要完整 cross_references 时用 full 格式。",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -190,27 +171,14 @@ TOOLS = {
                 "housekeeping": {
                     "type": ["boolean", "object"],
                     "default": True,
-                    "description": "是否执行整理。false=禁用；true=使用默认配置；object=自定义配置（如 {\"auto_compress\": true, \"auto_consolidate\": true, \"compress_max_age_days\": 30}）",
-                },
-                "llm_config": {
-                    "type": "object",
-                    "description": "可选：外部 Agent 透传的 LLM 配置。提供时 dreaming 使用该 LLM 自动压缩旧记忆并合并相似 chunk；未提供时 Shibei 自身不调用 LLM，只返回候选建议",
-                    "properties": {
-                        "api_key": {"type": "string", "description": "LLM API key"},
-                        "model": {"type": "string", "default": "deepseek-chat", "description": "模型名"},
-                        "base_url": {"type": "string", "default": "https://api.deepseek.com/v1", "description": "API base URL"},
-                        "temperature": {"type": "number", "default": 0.3},
-                        "max_tokens": {"type": "integer", "default": 1024},
-                        "timeout": {"type": "number", "default": 30.0},
-                    },
-                    "required": ["api_key"],
+                    "description": "是否执行整理。false=禁用；true=使用默认配置；object=自定义配置（如 {\"compress_max_age_days\": 30, \"consolidate_threshold\": 0.6}）",
                 },
             },
         },
     },
     "shibei_consolidate": {
         "handler": _handle_consolidate,
-        "description": "整理知识库：发现内容高度重叠的 chunk，聚类后生成精炼摘要。可选 apply 模式，直接删除原重叠 chunks 并把合并摘要写回知识库。",
+        "description": "整理知识库：发现内容高度重叠的 chunk 聚类。Shibei 自身不生成合并摘要也不自动写回数据库；如需应用合并，请用 shibei_apply_consolidation 传入外部 Agent 生成的摘要。",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -228,11 +196,6 @@ TOOLS = {
                     "type": "integer",
                     "default": 500,
                     "description": "最大扫描 chunk 数",
-                },
-                "apply": {
-                    "type": "boolean",
-                    "default": False,
-                    "description": "是否将合并摘要写回知识库并删除原重叠 chunks（谨慎使用）。若未配置 Shibei 自身 LLM，建议用 shibei_apply_consolidation 传入外部生成的摘要",
                 },
             },
         },
@@ -256,7 +219,7 @@ TOOLS = {
                             },
                             "summary": {
                                 "type": "string",
-                                "description": "由外部 LLM 生成的合并摘要",
+                                "description": "由外部 Agent 生成的合并摘要",
                             },
                             "sources": {
                                 "type": "array",

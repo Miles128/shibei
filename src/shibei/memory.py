@@ -382,108 +382,15 @@ class MemoryStore(AbstractMemoryStore):
             conn.commit()
         return deleted
 
-    def compress_old(
-        self,
-        max_age_days: int = 30,
-        keep_recent: int = 10,
-        llm_client=None,
-    ) -> dict:
-        """压缩旧记忆：只压缩 short_term，跳过 long_term 和 personal。
-
-        Args:
-            max_age_days: 超过 N 天的记忆才考虑压缩
-            keep_recent: 最近 N 条记忆始终保留，不压缩
-            llm_client: 用于判断生命周期和生成摘要
-
-        Returns:
-            {"compressed": N, "skipped": M, "deleted": K, "errors": E}
-        """
-        if llm_client is None or not getattr(llm_client, "ready", False):
-            return {"compressed": 0, "skipped": 0, "deleted": 0, "errors": 1}
-
-        cutoff = (datetime.now(timezone.utc) - timedelta(days=max_age_days)).isoformat(timespec="seconds")
-
-        with sqlite3.connect(str(self.db_file), timeout=30.0) as conn:
-            conn.row_factory = sqlite3.Row
-            rows = conn.execute(
-                f"""
-                SELECT rowid, id, fact, tags, category, expires_at, created_at FROM {MEMORIES_TABLE}
-                WHERE (superseded_by IS NULL OR superseded_by = '')
-                  AND (created_at <= ?)
-                ORDER BY created_at DESC
-                """,
-                (cutoff,),
-            ).fetchall()
-
-        candidates = rows[keep_recent:]
-
-        compressed = 0
-        skipped = 0
-        deleted = 0
-        errors = 0
-
-        for row in candidates:
-            fact = row["fact"]
-            try:
-                lifespan = llm_client.classify_memory_lifespan(fact)
-            except Exception as e:
-                logger.warning("LLM 判断记忆生命周期失败: %s", e)
-                errors += 1
-                continue
-
-            if lifespan in ("long_term", "personal"):
-                skipped += 1
-                continue
-
-            try:
-                summary = llm_client.summarize(fact, max_length=80)
-                if not summary:
-                    raise ValueError("摘要为空")
-            except Exception as e:
-                logger.warning("摘要生成失败，删除该短期记忆: %s", e)
-                summary = ""
-
-            with sqlite3.connect(str(self.db_file), timeout=30.0) as conn:
-                rowid = row["rowid"]
-                if summary:
-                    tags = (row["tags"] or "") + ",compressed"
-                    category = row["category"] or "user"
-                    conn.execute(f"DELETE FROM {FTS_TABLE} WHERE rowid = ?", (rowid,))
-                    conn.execute(
-                        f"""
-                        UPDATE {MEMORIES_TABLE}
-                        SET fact = ?, tags = ?
-                        WHERE rowid = ?
-                        """,
-                        (summary, tags, rowid),
-                    )
-                    conn.execute(
-                        f"INSERT INTO {FTS_TABLE}(rowid, fact, tags, category) VALUES (?, ?, ?, ?)",
-                        (rowid, tokenize_text(summary), tags, category),
-                    )
-                    compressed += 1
-                else:
-                    conn.execute(f"DELETE FROM {FTS_TABLE} WHERE rowid = ?", (rowid,))
-                    conn.execute(f"DELETE FROM {MEMORIES_TABLE} WHERE rowid = ?", (rowid,))
-                    deleted += 1
-                conn.commit()
-
-        return {
-            "compressed": compressed,
-            "skipped": skipped,
-            "deleted": deleted,
-            "errors": errors,
-        }
-
     def find_compressible(
         self,
         max_age_days: int = 30,
         keep_recent: int = 10,
     ) -> List[dict]:
-        """找出可能需要压缩的旧记忆候选，不调用 LLM。
+        """找出可能需要压缩的旧记忆候选。
 
         返回列表（按创建时间倒序），每条包含 id/fact/tags/category/created_at。
-        外部 Agent 可用 LLM 判断生命周期后，再调用 update/update_batch 压缩。
+        外部 Agent 判断生命周期后，可调用 update/update_batch 压缩。
         """
         cutoff = (datetime.now(timezone.utc) - timedelta(days=max_age_days)).isoformat(timespec="seconds")
 

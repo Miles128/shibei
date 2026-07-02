@@ -3,7 +3,6 @@
 import os
 from pathlib import Path
 from dataclasses import dataclass, field
-from typing import Optional
 
 import yaml
 
@@ -26,14 +25,6 @@ class ChunkingConfig:
 
 
 @dataclass
-class SummarizeConfig:
-    enabled: bool = True  # 默认开启：为每个 chunk 生成一句话摘要，增强语义召回
-    max_length: int = 100  # 摘要最大字符数
-    # 为空则使用 config.llm.model；可单独指定摘要模型
-    model: Optional[str] = None
-
-
-@dataclass
 class TagRule:
     pattern: str = ""
     tag: str = ""
@@ -42,19 +33,6 @@ class TagRule:
 @dataclass
 class TaggingConfig:
     rules: list[TagRule] = field(default_factory=list)
-
-
-@dataclass
-class LLMConfig:
-    enabled: bool = False
-    provider: str = "openai-compatible"  # openai | openai-compatible
-    model: str = "deepseek-chat"
-    base_url: str = "https://api.deepseek.com/v1"
-    api_key: str = ""
-    temperature: float = 0.3
-    max_tokens: int = 1024
-    timeout: float = 30.0
-    system_prompt: str = "You are a helpful assistant for a Chinese personal knowledge base."
 
 
 DEFAULT_IGNORE_DIRS = (
@@ -83,9 +61,7 @@ class Config:
     extensions: list[str] = field(default_factory=lambda: [".md", ".txt", ".docx", ".xlsx", ".csv"])
     ignore_dirs: list[str] = field(default_factory=lambda: list(DEFAULT_IGNORE_DIRS))
     chunking: ChunkingConfig = field(default_factory=ChunkingConfig)
-    summarize: SummarizeConfig = field(default_factory=SummarizeConfig)
     tagging: TaggingConfig = field(default_factory=TaggingConfig)
-    llm: LLMConfig = field(default_factory=LLMConfig)
 
     @property
     def db_path_expanded(self) -> Path:
@@ -102,7 +78,6 @@ def load_config(path: str = "config.yaml") -> Config:
     环境变量：
       SHIBEI_CONFIG       — 配置文件路径（默认 config.yaml）
       SHIBEI_SOURCES      — 覆盖数据源（逗号分隔）
-      SHIBEI_LLM_API_KEY  — 覆盖 LLM API Key（避免明文写入配置文件）
     """
     config_path = os.environ.get("SHIBEI_CONFIG", path)
 
@@ -134,18 +109,8 @@ def load_config(path: str = "config.yaml") -> Config:
     if "chunking" in raw:
         cfg.chunking = ChunkingConfig(**raw["chunking"])
 
-    # Summarize
-    if "summarize" in raw:
-        cfg.summarize = SummarizeConfig(**raw["summarize"])
-
     # Tagging
     if "tagging" in raw and "rules" in raw["tagging"]:
         cfg.tagging.rules = [TagRule(**r) for r in raw["tagging"]["rules"]]
-
-    # LLM
-    if "llm" in raw:
-        cfg.llm = LLMConfig(**raw["llm"])
-    if os.environ.get("SHIBEI_LLM_API_KEY"):
-        cfg.llm.api_key = os.environ["SHIBEI_LLM_API_KEY"]
 
     return cfg

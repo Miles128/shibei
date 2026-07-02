@@ -55,35 +55,6 @@ tagging:
 
 `pattern` 是 Python 正则（大小写不敏感）。
 
-## summarize
-
-导入时为每个 chunk 生成一句话摘要，增强召回。
-
-```yaml
-summarize:
-  enabled: true                  # 默认开启
-  max_length: 100                # 摘要最大字符数
-  model: ""                      # 为空则使用 llm.model
-```
-
-## llm
-
-LLM 增强（可选，默认关闭）。开启后支持查询改写、事实提取、 dreaming 洞察增强、记忆生命周期判断、相似 chunk 合并摘要。
-
-```yaml
-llm:
-  enabled: false
-  provider: openai-compatible
-  model: deepseek-chat
-  base_url: https://api.deepseek.com/v1
-  api_key: ""                    # 必填
-  temperature: 0.3
-  max_tokens: 1024
-  timeout: 30.0
-```
-
-环境变量覆盖：`SHIBEI_LLM_API_KEY`
-
 ## CLI 参数
 
 ```bash
@@ -98,5 +69,4 @@ shibei search "关键词" --limit 10 --tag ai
 |------|--------|
 | `SHIBEI_CONFIG` | 配置文件路径 |
 | `SHIBEI_SOURCES` | sources（逗号分隔） |
-| `SHIBEI_LLM_API_KEY` | llm.api_key |
 | `SHIBEI_MCP_DEBUG` | MCP server 调试模式 |

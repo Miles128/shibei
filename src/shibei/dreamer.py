@@ -21,20 +21,16 @@ from collections import Counter, defaultdict
 from typing import Optional
 
 from .tokenizer import is_noise_token
-from .llm import LLMClient
 
 logger = logging.getLogger(__name__)
 
 
 # 整理（housekeeping）默认配置。
-# dreaming 默认会尝试自动压缩记忆、合并相似 chunk；若未提供 LLM 客户端，
-# 则退化为发现模式，只返回候选供外部 Agent 判断。
+# dreaming 只做零 LLM 依赖的整理：清理过期记忆、识别可压缩记忆候选、
+# 发现相似 chunk 候选。具体压缩/合并由外部 Agent 自行判断并调用
+# shibei_update_memory / shibei_apply_consolidation 执行。
 DEFAULT_HOUSEKEEPING = {
     "cleanup_expired_memories": True,
-    "auto_compress": True,          # 是否自动压缩旧短期记忆
-    "auto_consolidate": True,       # 是否自动合并相似 chunk
-    "identify_compressible_memories": True,  # 无 LLM 时返回候选
-    "identify_similar_chunks": True,         # 无 LLM 时返回候选
     "compress_max_age_days": 30,
     "compress_keep_recent": 10,
     "consolidate_threshold": 0.6,
@@ -243,16 +239,16 @@ def generate_insights(chunks: list[dict], cross_refs: list[dict], patterns: dict
 
 def _run_housekeeping(
     db_path: Path,
-    llm_client: Optional[LLMClient] = None,
     housekeeping: Optional[dict] = None,
 ) -> dict:
-    """执行 dreaming 配套的整理任务。
+    """执行 dreaming 配套的整理任务（零 LLM 依赖）。
 
-    dreaming 默认自动执行整理：
-      - 清理过期记忆（无需 LLM）
-      - 自动压缩旧短期记忆（需 LLM；未提供时返回候选）
-      - 自动合并相似 chunk（需 LLM；未提供时返回候选）
+    dreaming 默认执行：
+      - 清理过期记忆
+      - 识别可能需要压缩的旧记忆候选
+      - 识别相似的 chunk 候选
 
+    具体压缩/合并由外部 Agent 判断并执行，Shibei 自身不调用 LLM。
     任何子任务失败都只记录 warning，不影响整体 dream 结果。
     """
     if housekeeping is False:
@@ -263,9 +259,8 @@ def _run_housekeeping(
         cfg.update(housekeeping)
 
     result: dict = {"enabled": True, "memory": {}, "consolidation": {}}
-    llm_ready = llm_client is not None and getattr(llm_client, "ready", False)
 
-    # 记忆：清理过期 + 压缩/识别可压缩候选
+    # 记忆：清理过期 + 识别可压缩候选
     try:
         from .memory import MemoryStore
 
@@ -275,74 +270,32 @@ def _run_housekeeping(
             deleted = store.cleanup_expired()
             result["memory"]["expired_deleted"] = deleted
 
-        if cfg["auto_compress"] and llm_ready:
-            compress_result = store.compress_old(
-                max_age_days=cfg["compress_max_age_days"],
-                keep_recent=cfg["compress_keep_recent"],
-                llm_client=llm_client,
-            )
-            result["memory"]["compress"] = compress_result
-        elif cfg["identify_compressible_memories"]:
-            candidates = store.find_compressible(
-                max_age_days=cfg["compress_max_age_days"],
-                keep_recent=cfg["compress_keep_recent"],
-            )
-            result["memory"]["compressible_candidates"] = candidates
-            result["memory"]["compressible_count"] = len(candidates)
-            if not llm_ready:
-                result["memory"]["compress"] = {
-                    "skipped": True,
-                    "reason": "llm_not_ready",
-                    "note": "提供 llm_config 后可自动压缩，否则请基于 candidates 手动调用 shibei_update_memory",
-                }
-        else:
-            result["memory"]["compressible"] = {"skipped": True}
+        candidates = store.find_compressible(
+            max_age_days=cfg["compress_max_age_days"],
+            keep_recent=cfg["compress_keep_recent"],
+        )
+        result["memory"]["compressible_candidates"] = candidates
+        result["memory"]["compressible_count"] = len(candidates)
     except Exception as e:
         logger.warning("记忆整理失败: %s", e)
         result["memory"]["error"] = str(e)
 
-    # 知识库：自动合并/识别相似 chunk
+    # 知识库：识别相似 chunk 候选
     try:
         from .consolidator import consolidate
 
-        if cfg["auto_consolidate"] and llm_ready:
-            consolidation = consolidate(
-                db_path,
-                threshold=cfg["consolidate_threshold"],
-                min_cluster_size=cfg["consolidate_min_cluster_size"],
-                max_chunks=cfg["consolidate_max_chunks"],
-                llm_client=llm_client,
-                apply=True,
-            )
-            result["consolidation"] = {
-                "status": consolidation.get("status"),
-                "total_chunks": consolidation.get("total_chunks", 0),
-                "cluster_count": consolidation.get("cluster_count", 0),
-                "applied": consolidation.get("applied", False),
-                "removed": consolidation.get("removed", 0),
-                "inserted": consolidation.get("inserted", 0),
-            }
-        elif cfg["identify_similar_chunks"]:
-            consolidation = consolidate(
-                db_path,
-                threshold=cfg["consolidate_threshold"],
-                min_cluster_size=cfg["consolidate_min_cluster_size"],
-                max_chunks=cfg["consolidate_max_chunks"],
-            )
-            result["consolidation"] = {
-                "status": consolidation.get("status"),
-                "total_chunks": consolidation.get("total_chunks", 0),
-                "cluster_count": consolidation.get("cluster_count", 0),
-            }
-            result["consolidation"]["clusters"] = consolidation.get("clusters", [])
-            if not llm_ready:
-                result["consolidation"]["apply"] = {
-                    "skipped": True,
-                    "reason": "llm_not_ready",
-                    "note": "提供 llm_config 后可自动合并，否则请基于 clusters 手动调用 shibei_apply_consolidation",
-                }
-        else:
-            result["consolidation"] = {"skipped": True}
+        consolidation = consolidate(
+            db_path,
+            threshold=cfg["consolidate_threshold"],
+            min_cluster_size=cfg["consolidate_min_cluster_size"],
+            max_chunks=cfg["consolidate_max_chunks"],
+        )
+        result["consolidation"] = {
+            "status": consolidation.get("status"),
+            "total_chunks": consolidation.get("total_chunks", 0),
+            "cluster_count": consolidation.get("cluster_count", 0),
+            "clusters": consolidation.get("clusters", []),
+        }
     except Exception as e:
         logger.warning("知识库合并整理失败: %s", e)
         result["consolidation"]["error"] = str(e)
@@ -353,24 +306,21 @@ def _run_housekeeping(
 def dream(db_path: Path,
           persist: bool = True, compare: bool = True,
           format: str = "full",
-          llm_client: Optional[LLMClient] = None,
           housekeeping: Optional[dict] = None) -> dict:
-    """执行 dreaming — 知识库自主思考 + 自动整理。
+    """执行 dreaming — 知识库自主思考 + 整理候选发现。
 
-    dreaming 默认自动完成整理：
+    dreaming 默认执行（零 LLM 依赖）：
       - 清理过期记忆
-      - 自动压缩旧短期记忆（需 LLM；未提供时返回候选）
-      - 自动合并相似 chunk（需 LLM；未提供时返回候选）
+      - 识别可能需要压缩的旧记忆候选
+      - 识别相似的 chunk 候选
 
-    当传入 llm_client 时，dreaming 会直接修改数据；
-    当未传入 LLM 时，退化为 skill 形式，只返回候选供外部 Agent 判断。
+    具体压缩/合并由外部 Agent 判断并执行；Shibei 自身不调用 LLM。
 
     Args:
         db_path: 数据存储根路径
         persist: 是否持久化结果到 ~/.shibei/dreams/
         compare: 是否与上次 dream 结果对比，输出增量变化
         format: 输出格式 "full" 完整 / "brief" 精简（MCP 默认用 brief）
-        llm_client: LLM 客户端；提供时自动执行压缩与合并
         housekeeping: 控制整理行为；传 False 禁用，传 dict 覆盖默认配置
     """
     chunks = load_chunks(db_path)
@@ -382,10 +332,9 @@ def dream(db_path: Path,
     patterns = find_patterns(chunks)
     insights = generate_insights(chunks, cross_refs, patterns)
 
-    # 整理（housekeeping）：自动执行或输出建议
+    # 整理（housekeeping）：识别候选
     hk_result = _run_housekeeping(
         db_path,
-        llm_client=llm_client,
         housekeeping=housekeeping,
     )
 

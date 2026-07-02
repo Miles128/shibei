@@ -1,16 +1,13 @@
 ---
 name: "shibei-dreaming"
-description: "Executes the Shibei knowledge-base dreaming process via MCP to discover cross-document connections, compress old memories, and merge similar chunks. Invoke when the user asks to run dreaming, organize notes, clean up old memories, consolidate overlapping knowledge, or explore hidden relationships in their personal knowledge base."
+description: "Executes the Shibei knowledge-base dreaming process via MCP to discover cross-document connections, identify compressible old memories, and find similar chunks for merging. Invoke when the user asks to run dreaming, organize notes, clean up old memories, consolidate overlapping knowledge, or explore hidden relationships in their personal knowledge base."
 ---
 
 # Shibei Dreaming Skill
 
 This skill guides an external AI system through the Shibei "dreaming" workflow using the Model Context Protocol (MCP).
 
-`shibei_dream` performs housekeeping in two modes:
-
-- **Skill / advisory mode (default)**: Shibei never calls an LLM itself. It discovers patterns and returns candidates (`compressible_candidates`, `clusters`) for the external AI agent to review and act on.
-- **Auto mode**: If the external AI agent provides `llm_config`, Shibei uses that LLM to auto-compress old memories and auto-merge similar chunks.
+`shibei_dream` never calls an LLM itself. It discovers patterns and returns candidates (`compressible_candidates`, `clusters`) for the external AI agent to review and act on with its own LLM.
 
 Shibei itself does not configure or use its own LLM.
 
@@ -35,9 +32,8 @@ All dreaming calls go through the `shibei_dream` MCP tool.
 | `format` | `"brief" \| "full"` | `"brief"` | `brief` returns stats, insights, and housekeeping summaries (recommended for MCP). `full` adds `cross_references`, `patterns`, and detailed cluster chunks. |
 | `persist` | `boolean` | `true` | Whether Shibei persists the result for future diff comparisons. |
 | `housekeeping` | `boolean \| object` | `true` | `false` disables housekeeping. `true` uses defaults. Pass an object to override thresholds, e.g. `{"compress_max_age_days": 30, "consolidate_threshold": 0.6}`. |
-| `llm_config` | `object` | omitted | Optional LLM config forwarded by the external AI agent. When provided, Shibei uses that LLM to auto-compress memories and auto-merge similar chunks. When omitted, Shibei returns candidates only and never calls an LLM itself. |
 
-### Example MCP Call (Auto Mode)
+### Example MCP Call
 
 ```json
 {
@@ -55,14 +51,6 @@ All dreaming calls go through the `shibei_dream` MCP tool.
         "consolidate_threshold": 0.6,
         "consolidate_min_cluster_size": 2,
         "consolidate_max_chunks": 500
-      },
-      "llm_config": {
-        "api_key": "<external-ai-api-key>",
-        "model": "deepseek-chat",
-        "base_url": "https://api.deepseek.com/v1",
-        "temperature": 0.3,
-        "max_tokens": 1024,
-        "timeout": 30
       }
     }
   }
@@ -81,7 +69,7 @@ Before any reasoning about "my memory" or the user's personal knowledge base, yo
 
 Call `shibei_dream(format="brief", persist=true, housekeeping=true)`.
 
-By default, Shibei returns candidates and lets the external AI agent decide what to do. If you want Shibei to auto-apply compression and consolidation on your behalf, include `llm_config` with the host AI's API credentials.
+Shibei returns candidates and lets the external AI agent decide what to do. Shibei itself does not auto-apply compression or consolidation.
 
 Validate the response:
 - If `status` is `"empty"`, stop and inform the user the knowledge base is empty.
@@ -93,32 +81,21 @@ Read the returned fields:
 - `stats.total_chunks`, `stats.unique_docs`, `stats.cross_references`
 - `insights[]` — high-level observations
 - `housekeeping.memory.expired_deleted` — automatically cleaned memories
-
-When `llm_config` was provided:
-- `housekeeping.memory.compress` — compression result (may include `compressed_count`).
-- `housekeeping.consolidation.applied` — whether similar chunks were merged.
-- `housekeeping.consolidation.removed` / `inserted` — how many chunks were removed/inserted.
-
-When `llm_config` was omitted:
 - `housekeeping.memory.compressible_candidates[]` — old memory candidates for compression.
 - `housekeeping.consolidation.cluster_count` and `clusters[]` — overlapping chunk candidates.
 
-### Step 3 — Act on Memory Compression Candidates (Only When No `llm_config`)
+### Step 3 — Act on Memory Compression Candidates
 
-If `llm_config` was provided, Shibei has already compressed old memories; skip this step.
-
-Otherwise, for each `compressible_candidate`:
+For each `compressible_candidate`:
 1. Read its `fact`, `tags`, `category`, and `created_at`.
 2. Use your own LLM to classify lifespan: `short_term`, `long_term`, or `personal`.
 3. If `short_term`, generate a concise summary.
 4. Call `shibei_update_memory` with `memory_id` and the new `fact` (and optionally updated `tags`).
 5. Skip `long_term` and `personal` memories.
 
-### Step 4 — Act on Similar Chunk Clusters (Only When No `llm_config`)
+### Step 4 — Act on Similar Chunk Clusters
 
-If `llm_config` was provided, Shibei has already merged similar chunks; skip this step.
-
-Otherwise, for each cluster with `size >= 2`:
+For each cluster with `size >= 2`:
 1. Read the `chunks[]` array to understand the overlapping content. Each chunk exposes `_rowid`.
 2. Use your own LLM to generate a merged summary that removes duplication.
 3. Build a payload: `{"clusters": [{"rowids": [...], "summary": "...", "sources": [...]}]}`.
@@ -131,27 +108,6 @@ Present the results using the output template in Section 5.
 ## 4. Output Formatting Specifications
 
 Use this structure when reporting results to the user.
-
-### Auto Mode (`llm_config` provided)
-
-```markdown
-## Dreaming 结果
-
-### 概览
-- 总 chunk 数：{stats.total_chunks}
-- 文档数：{stats.unique_docs}
-- 跨文档连接：{stats.cross_references}
-- 过期记忆已清理：{housekeeping.memory.expired_deleted}
-- 旧短期记忆已压缩：{housekeeping.memory.compress.compressed_count} 条
-- 相似 chunk 已合并：移除 {housekeeping.consolidation.removed} 条，新增 {housekeeping.consolidation.inserted} 条
-
-### 洞察
-{for each insight}
-- {insight}
-{/for}
-```
-
-### Skill Mode (`llm_config` omitted)
 
 ```markdown
 ## Dreaming 结果
@@ -240,7 +196,7 @@ Your knowledge base is currently empty. Run `shibei import` first to import docu
 
 ### Invalid Tool Response
 
-If the response is missing expected fields (e.g., `housekeeping` is absent):
+If the response is missing expected fields (e.g. `housekeeping` is absent):
 1. Log the raw response for debugging.
 2. Fall back to reporting whatever fields are available.
 3. Do not fabricate missing values.
@@ -252,7 +208,7 @@ Before acting on memory candidates, verify:
 1. **Identity of caller**: The MCP server runs under the user's local environment. Assume the caller has the same permissions as the user.
 2. **Scope of modification**: Only update or delete memory entries that were explicitly returned by `shibei_dream` or `shibei_search`.
 3. **No cross-user access**: Never use memory IDs from one user for another user.
-4. **Confirmation for destructive operations**: When `shibei_consolidate(apply=true)` would delete original chunks, summarize the impact (number of chunks to be removed and inserted) before applying.
+4. **Confirmation for destructive operations**: When `shibei_apply_consolidation` would delete original chunks, summarize the impact (number of chunks to be removed and inserted) before applying.
 
 ## 8. Interaction Flow Diagram
 
@@ -294,36 +250,32 @@ Before acting on memory candidates, verify:
 4. `shibei.server` reads/writes to the local SQLite database (BM25 index and memory store).
 5. `shibei.server` returns structured JSON results.
 6. External AI formats the results and presents them to the user.
-7. If modifications are needed, External AI issues additional MCP calls (`shibei_update_memory`, `shibei_consolidate`) and repeats steps 2–6.
+7. If modifications are needed, External AI issues additional MCP calls (`shibei_update_memory`, `shibei_apply_consolidation`) and repeats steps 2–6.
 
-## 9. Example Full Session (Auto Mode)
+## 9. Example Full Session
 
 **User**: "整理一下我的笔记，去掉重复内容，把旧短期记忆压缩一下。"
 
 **AI** (uses this skill):
 
-1. Call `shibei_dream(format="brief", housekeeping=true, llm_config={...})` using the host AI's own LLM credentials.
+1. Call `shibei_dream(format="brief", housekeeping=true)`.
 2. Receive:
    ```json
    {
      "housekeeping": {
        "memory": {
          "expired_deleted": 2,
-         "compress": {
-           "compressed_count": 2,
-           "skipped_personal": 1
-         }
+         "compressible_count": 3,
+         "compressible_candidates": [...]
        },
        "consolidation": {
          "status": "ok",
-         "applied": true,
-         "removed": 2,
-         "inserted": 1,
-         "cluster_count": 1
+         "cluster_count": 1,
+         "clusters": [...]
        }
      }
    }
    ```
-3. Report final results to the user.
-
-> If you do not provide `llm_config`, `shibei_dream` falls back to skill mode and returns `compressible_candidates` and `clusters` for manual review, as described in Steps 3 and 4.
+3. Use your own LLM to classify candidates and generate merged summaries.
+4. Call `shibei_update_memory` for short-term memories and `shibei_apply_consolidation` for clusters.
+5. Report final results to the user.

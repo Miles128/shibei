@@ -46,13 +46,8 @@ def test_consolidate_clusters(tmp_path):
         {"source": "c.md", "text": "Python 是一门流行的编程语言", "tags": ""},
     ]
 
-    class DummyLLM:
-        ready = True
-        def summarize(self, text, max_length=100):
-            return "合并摘要"
-
     with patch("shibei.consolidator.load_chunks", return_value=chunks):
-        result = consolidate(tmp_path, threshold=0.4, min_cluster_size=2, llm_client=DummyLLM())
+        result = consolidate(tmp_path, threshold=0.4, min_cluster_size=2)
 
     assert result["status"] == "ok"
     assert result["total_chunks"] == 3
@@ -60,64 +55,8 @@ def test_consolidate_clusters(tmp_path):
     cluster = result["clusters"][0]
     assert cluster["size"] >= 2
     assert "a.md" in cluster["sources"] or "b.md" in cluster["sources"]
-
-
-def test_consolidate_apply_writes_back(tmp_path):
-    """apply=True 时删除原 chunk 并写入合并摘要。"""
-    from shibei.consolidator import consolidate
-    from shibei.bm25 import BM25Index
-
-    db_path = tmp_path
-    bm25 = BM25Index(str(db_path / "fts5.db"))
-    bm25.add_batch([
-        ("a.md", "a.md", "ai", "Redis 持久化机制包括 RDB 和 AOF 两种方式"),
-        ("b.md", "b.md", "ai", "Redis 使用 RDB 和 AOF 做持久化存储"),
-        ("c.md", "c.md", "ai", "Python 是一门流行的编程语言"),
-    ])
-
-    class DummyLLM:
-        ready = True
-        def summarize(self, text, max_length=100):
-            return "Redis 使用 RDB 和 AOF 两种持久化机制。"
-
-    result = consolidate(db_path, threshold=0.4, min_cluster_size=2,
-                         llm_client=DummyLLM(), apply=True)
-
-    assert result["status"] == "ok"
-    assert result["applied"] is True
-    assert result["removed"] >= 2
-    assert result["inserted"] >= 1
-
-    # 验证原 chunk 被删除：3 个原 chunk - 2 个被合并 + 1 个合并摘要 = 2
-    assert bm25.count() == 2
-    # 更直接的验证：存在合并来源
-    sources = bm25.list_sources()
-    assert any(s.startswith("__consolidated__") for s in sources)
-
-
-def test_consolidate_apply_false_does_not_modify(tmp_path):
-    """apply=False 时不修改数据库。"""
-    from shibei.consolidator import consolidate
-    from shibei.bm25 import BM25Index
-
-    db_path = tmp_path
-    bm25 = BM25Index(str(db_path / "fts5.db"))
-    bm25.add_batch([
-        ("a.md", "a.md", "ai", "Redis 持久化机制包括 RDB 和 AOF"),
-        ("b.md", "b.md", "ai", "Redis 使用 RDB 和 AOF 做持久化存储"),
-    ])
-
-    class DummyLLM:
-        ready = True
-        def summarize(self, text, max_length=100):
-            return "合并摘要"
-
-    result = consolidate(db_path, threshold=0.4, min_cluster_size=2,
-                         llm_client=DummyLLM(), apply=False)
-
-    assert result["applied"] is False
-    assert result["removed"] == 0
-    assert bm25.count() == 2
+    # 不自动生成摘要
+    assert cluster.get("summary") == ""
 
 
 def test_apply_consolidation_with_external_summary(tmp_path):

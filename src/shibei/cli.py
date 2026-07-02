@@ -98,21 +98,6 @@ def cmd_memories_cleanup(args):
     print(f"🧹 清理完成，删除 {deleted} 条过期记忆")
 
 
-def cmd_memories_compress(args):
-    """压缩旧记忆：只压缩 short_term，跳过 long_term 和 personal"""
-    brain = Shibei(args.resolved_config)
-    result = brain.compress_memories(
-        max_age_days=args.days,
-        keep_recent=args.keep,
-    )
-    print("📦 记忆压缩完成")
-    print(f"   压缩: {result['compressed']} 条")
-    print(f"   跳过: {result['skipped']} 条（长期/个人）")
-    print(f"   删除: {result['deleted']} 条（摘要失败）")
-    if result['errors']:
-        print(f"   错误: {result['errors']} 条")
-
-
 def cmd_memories_forget(args):
     """删除一条记忆"""
     brain = Shibei(args.resolved_config)
@@ -148,12 +133,7 @@ def cmd_list(args):
 def cmd_dream(args):
     """执行 dreaming — 默认行为"""
     brain = Shibei(args.resolved_config)
-    if getattr(args, "no_housekeeping", False):
-        housekeeping = False
-    else:
-        housekeeping = {}
-        if getattr(args, "apply_consolidation", False):
-            housekeeping["consolidate_apply"] = True
+    housekeeping = False if getattr(args, "no_housekeeping", False) else {}
     result = brain.dream(housekeeping=housekeeping)
 
     if result["status"] == "empty":
@@ -189,14 +169,12 @@ def cmd_dream(args):
     hk = result.get("housekeeping", {})
     if hk.get("enabled"):
         print()
-        print("🧹 自动整理：")
+        print("🧹 整理候选：")
         mem = hk.get("memory", {})
         if "expired_deleted" in mem:
             print(f"  清理过期记忆: {mem['expired_deleted']} 条")
-        compress = mem.get("compress", {})
-        if compress.get("compressed") is not None:
-            print(f"  压缩短期记忆: {compress['compressed']} 条")
-            print(f"  跳过长期/个人记忆: {compress.get('skipped', 0)} 条")
+        if "compressible_count" in mem:
+            print(f"  可压缩记忆候选: {mem['compressible_count']} 条")
         cons = hk.get("consolidation", {})
         if cons.get("status") == "ok":
             print(f"  相似 chunk 聚类: {cons.get('cluster_count', 0)} 组")
@@ -293,13 +271,12 @@ def cmd_dream_diff(args):
 
 
 def cmd_consolidate(args):
-    """整理知识库：发现相似 chunk 并生成合并摘要"""
+    """整理知识库：发现相似 chunk 候选"""
     brain = Shibei(args.resolved_config)
     result = brain.consolidate(
         threshold=args.threshold,
         min_cluster_size=args.min_size,
         max_chunks=args.max_chunks,
-        apply=args.apply,
     )
 
     if result["status"] == "empty":
@@ -309,22 +286,14 @@ def cmd_consolidate(args):
     print(f"🧹 整理完成")
     print(f"   共扫描 {result['total_chunks']} 个 chunks")
     print(f"   发现 {result['cluster_count']} 组相似内容")
-    if args.apply:
-        if result.get("applied"):
-            print(f"   ✅ 已应用：删除 {result.get('removed', 0)} 个原 chunk，写入 {result.get('inserted', 0)} 个合并 chunk")
-        else:
-            print(f"   ⚠️ apply 未成功（可能需要 LLM 或仅支持 BM25）")
     print()
 
     for i, cluster in enumerate(result["clusters"], 1):
         print(f"--- 组 {i} ({cluster['size']} 条) ---")
         print(f"来源: {', '.join(cluster['sources'])}")
-        if cluster.get("summary"):
-            print(f"合并摘要: {cluster['summary']}")
-        else:
-            print("原始片段:")
-            for c in cluster["chunks"][:3]:
-                print(f"  • [{Path(c['source']).name}] {c['text'][:120]}...")
+        print("原始片段:")
+        for c in cluster["chunks"][:3]:
+            print(f"  • [{Path(c['source']).name}] {c['text'][:120]}...")
         print()
 
     if args.output:
@@ -503,12 +472,6 @@ def main():
 
     p_memories_cleanup = p_memories_sub.add_parser("cleanup", help="清理已过期的记忆")
 
-    p_memories_compress = p_memories_sub.add_parser("compress", help="压缩旧短期记忆")
-    p_memories_compress.add_argument("--days", type=int, default=30,
-                                     help="超过 N 天的记忆才压缩（默认 30）")
-    p_memories_compress.add_argument("--keep", type=int, default=10,
-                                     help="最近 N 条记忆始终保留（默认 10）")
-
     p_memories_forget = p_memories_sub.add_parser("forget", help="删除一条记忆")
     p_memories_forget.add_argument("memory_id", help="记忆 ID（可只给前 8 位，自动匹配）")
 
@@ -522,8 +485,6 @@ def main():
                                help="最大扫描 chunk 数（默认 500）")
     p_consolidate.add_argument("--output", default=None,
                                help="输出合并报告到 JSON 文件")
-    p_consolidate.add_argument("--apply", action="store_true",
-                               help="将合并摘要写回知识库，并删除原重叠 chunks")
 
     # dream（子命令组）
     p_dream = sub.add_parser("dream", help="知识库 dreaming — 发现隐藏连接与洞察")
@@ -531,9 +492,7 @@ def main():
 
     p_dream_run = p_dream_sub.add_parser("run", help="执行 dreaming（默认）")
     p_dream_run.add_argument("--no-housekeeping", action="store_true",
-                             help="禁用自动整理（记忆清理/压缩/相似 chunk 合并）")
-    p_dream_run.add_argument("--apply-consolidation", action="store_true",
-                             help="在 dreaming 中直接应用合并结果（删除原 chunk，写入合并摘要）")
+                             help="禁用整理（记忆清理/候选识别）")
 
     p_dream_compress = p_dream_sub.add_parser("compress", help="压缩历史 dream 记录")
     p_dream_compress.add_argument("--keep", type=int, default=5,
@@ -597,7 +556,6 @@ def main():
             "list": cmd_memories_list,
             "search": cmd_memories_search,
             "cleanup": cmd_memories_cleanup,
-            "compress": cmd_memories_compress,
             "forget": cmd_memories_forget,
         }.get(memories_cmd, lambda a: p_memories.print_help())(args)
         return

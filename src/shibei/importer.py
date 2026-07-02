@@ -8,7 +8,6 @@
 
 import logging
 from pathlib import Path
-from typing import Optional
 
 from .config import Config
 from .tagger import Tagger
@@ -16,7 +15,6 @@ from .manifest import Manifest
 from .parsers import parse_file
 from .dedup import ChunkHashStore, content_hash, dedup_chunks
 from .chunker import chunk_text, ChildChunk
-from .llm import LLMClient
 
 logger = logging.getLogger(__name__)
 
@@ -28,10 +26,9 @@ def _path_under_ignored_dir(path: Path, ignore_dirs: set[str]) -> bool:
 class Importer:
     """扫描文档文件，分块，存入 BM25 FTS5。"""
 
-    def __init__(self, cfg: Config, llm_client: Optional[LLMClient] = None):
+    def __init__(self, cfg: Config):
         self.cfg = cfg
         self.tagger = Tagger(cfg.tagging)
-        self.llm = llm_client
 
     def run(self, dirs: 'list[str] | None' = None, full: bool = False,
             file_pattern: 'str | None' = None) -> dict:
@@ -107,18 +104,14 @@ class Importer:
                 for cc in chunks:
                     chunks_data.append(
                         (slug, str(f), ",".join(tags),
-                         cc.text, cc.parent_text, cc.parent_id, "")
+                         cc.text, cc.parent_text, cc.parent_id)
                     )
             else:
                 # 普通模式
                 for chunk_text_str in chunks:
                     chunks_data.append(
-                        (slug, str(f), ",".join(tags), chunk_text_str, "", "", "")
+                        (slug, str(f), ",".join(tags), chunk_text_str, "", "")
                     )
-
-        # 可选：为每个 chunk 生成一句话摘要（用于摘要索引召回）
-        if self.cfg.summarize.enabled and self.llm and self.llm.ready:
-            chunks_data = self._summarize_chunks(chunks_data)
 
         # 精确去重：跳过内容完全相同的 chunk
         hash_store = ChunkHashStore(self.cfg.db_path_expanded)
@@ -138,7 +131,7 @@ class Importer:
             chunks_data, hash_store.all_hashes()
         )
         # 记录新增 hash 到 store（首次出现的 source）
-        for source, file_path, tags, content, _parent_text, _parent_id, _summary in unique_chunks:
+        for source, file_path, tags, content, _parent_text, _parent_id in unique_chunks:
             h = content_hash(content)
             if not hash_store.has(h):
                 hash_store.add(h, source)
@@ -169,132 +162,69 @@ class Importer:
             result["warnings"] = warnings
         return result
 
-    def _summarize_chunks(self, chunks_data: list) -> list:
-        """批量为 chunks 生成一句话摘要，失败时保持空字符串。
-
-        chunks_data: 7-tuple (..., summary)
-        返回新的 7-tuple 列表。
-        """
-        if not chunks_data:
-            return chunks_data
-
-        max_len = self.cfg.summarize.max_length
-        batch_size = 10
-        summaries: list[str] = []
-
-        for i in range(0, len(chunks_data), batch_size):
-            batch = chunks_data[i:i + batch_size]
-            contents = [item[3] for item in batch]
-            prompt = (
-                "请为以下每段文本生成一句中文摘要，保留核心信息。"
-                f"每句不超过 {max_len} 个字符。按原始顺序返回 JSON 数组，不要解释。\n\n"
-            )
-            for idx, text in enumerate(contents, 1):
-                prompt += f"[{idx}] {text[:600]}\n\n"
-            prompt += '输出格式：["摘要1", "摘要2", ...]'
-
-            try:
-                raw = self.llm.chat(prompt)
-                parsed = self.llm._extract_json_list(raw)
-                # 补齐数量
-                parsed.extend([""] * (len(batch) - len(parsed)))
-                summaries.extend(parsed[:len(batch)])
-            except Exception as e:
-                logger.warning("批量摘要生成失败: %s", e)
-                summaries.extend([""] * len(batch))
-
-        result = []
-        for item, summary in zip(chunks_data, summaries):
-            # 替换最后一个字段（summary）
-            result.append((*item[:6], summary))
-        return result
-
-    def _import_bm25(
-        self,
-        chunks_data: list,
-        to_remove: list[str],
-    ):
-        """写入 BM25 FTS5 索引（增量）。
-
-        chunks_data: 7-tuple (source, file_path, tags, content, parent_text, parent_id, summary)
-        BM25 表结构扩展：增加 parent_text, parent_id, summary 列。
-        """
+    def _import_bm25(self, chunks_data: list, to_remove: list[str]):
+        """把分块写入 BM25 索引，并删除已移除文件的旧 chunk。"""
         from .bm25 import BM25Index
 
-        bm25 = BM25Index(str(self.cfg.db_path_expanded / "fts5.db"))
+        db_path = self.cfg.db_path_expanded / "fts5.db"
+        bm25 = BM25Index(str(db_path))
 
-        if to_remove:
-            bm25.remove_sources(to_remove)
+        # 删除已移除/变更文件的旧 chunk
+        for fp in to_remove:
+            bm25.remove_by_source(fp)
+        # 变更文件会在 remove_by_source 中删除旧 chunk，然后下面 add_batch 写入新 chunk
 
         if chunks_data:
-            # parent 信息存入 content 表的额外列
             bm25.add_batch(chunks_data)
 
 
-def list_sources(cfg: Config, limit: int = 0, offset: int = 0) -> dict:
-    """列出已入库文件，支持分页和聚合摘要。
-
-    Args:
-        cfg: 配置
-        limit: 每页条数（0=不分页，返回全部）
-        offset: 起始偏移
+def list_sources(config: Config, limit: int = 0, offset: int = 0) -> dict:
+    """列出已入库的文件来源。
 
     Returns:
         {
-            "count": 总文件数,
-            "sources": 当前页文件列表,
-            "limit": 分页大小,
-            "offset": 当前偏移,
-            "has_more": 是否还有更多,
+            "count": 总数,
+            "sources": [...],
             "summary": {
-                "total_chunks": N,      # 总 chunk 数
-                "total_files": N,       # 同 count
-                "by_tag": {"tag": N},   # 按标签统计文件数
-                "engines": ["bm25"]
-            }
+                "total_chunks": chunk 总数,
+                "total_files": 文件总数,
+                "by_tag": {tag: count}
+            },
+            "has_more": bool
         }
     """
     from .bm25 import BM25Index
 
-    bm25 = BM25Index(str(cfg.db_path_expanded / "fts5.db"))
-    source_rows = bm25.list_sources_with_meta()
-    source_tags = {}
-    for row in source_rows:
-        source_tags.setdefault(row["source"], set()).update(
-            t.strip() for t in (row.get("tags") or "").split(",") if t.strip()
-        )
-    all_sources = sorted(source_tags.keys())
+    db_path = config.db_path_expanded / "fts5.db"
+    bm25 = BM25Index(str(db_path))
 
-    # 聚合标签统计
-    tag_counts: dict[str, int] = {}
-    for tags in source_tags.values():
-        for tag in tags:
-            tag_counts[tag] = tag_counts.get(tag, 0) + 1
+    all_meta = bm25.list_sources_with_meta()
+    total = len(all_meta)
 
-    # 分页
-    total = len(all_sources)
-    if limit > 0:
-        page_sources = all_sources[offset:offset + limit]
-        has_more = offset + limit < total
-    else:
-        page_sources = all_sources[offset:]
-        has_more = False
+    chunks_total = bm25.count()
 
-    # 总 chunk 数
-    total_chunks = bm25.count()
+    by_tag: dict[str, int] = {}
+    for info in all_meta:
+        for tag in (info.get("tags") or "").split(","):
+            tag = tag.strip()
+            if tag:
+                by_tag[tag] = by_tag.get(tag, 0) + 1
 
-    summary = {
-        "total_chunks": total_chunks,
-        "total_files": total,
-        "by_tag": dict(sorted(tag_counts.items(), key=lambda x: x[1], reverse=True)),
-        "engines": ["bm25"],
-    }
+    if offset:
+        all_meta = all_meta[offset:]
+    if limit:
+        all_meta = all_meta[:limit]
+
+    sources = [info["source"] for info in all_meta]
+    has_more = (offset + limit) < total if limit else False
 
     return {
         "count": total,
-        "sources": page_sources,
-        "limit": limit,
-        "offset": offset,
+        "sources": sources,
+        "summary": {
+            "total_chunks": chunks_total,
+            "total_files": total,
+            "by_tag": by_tag,
+        },
         "has_more": has_more,
-        "summary": summary,
     }

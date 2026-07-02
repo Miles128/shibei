@@ -246,7 +246,7 @@ def test_dream_housekeeping_default_runs():
 
 
 def test_dream_housekeeping_identifies_similar_chunks():
-    """dream housekeeping 在无 LLM 时也能识别相似 chunk 候选"""
+    """dream housekeeping 识别相似 chunk 候选，不自动 apply"""
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = Path(tmpdir)
         from shibei.bm25 import BM25Index
@@ -267,20 +267,11 @@ def test_dream_housekeeping_identifies_similar_chunks():
         assert cluster.get("summary") == ""
 
 
-def test_dream_auto_compresses_with_llm():
-    """提供 LLM 时，dream 自动压缩旧短期记忆。"""
+def test_dream_identifies_compressible_memories():
+    """dream housekeeping 识别可压缩记忆候选，不自动压缩。"""
     from datetime import datetime, timezone, timedelta
     from shibei.memory import MemoryStore
     from shibei.bm25 import BM25Index
-
-    class DummyLLM:
-        ready = True
-
-        def classify_memory_lifespan(self, fact):
-            return "short_term" if "临时" in fact else "long_term"
-
-        def summarize(self, text, max_length=100):
-            return f"摘要：{text[:10]}"
 
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = Path(tmpdir)
@@ -297,43 +288,12 @@ def test_dream_auto_compresses_with_llm():
         store.add("长期项目目标", category="user", created_at=old, supersede_threshold=2.0)
 
         result = dream(
-            db_path, format="full", persist=False, compare=False, llm_client=DummyLLM(),
+            db_path, format="full", persist=False, compare=False,
             housekeeping={"compress_keep_recent": 0},
         )
         assert result["status"] == "ok"
-        compress = result["housekeeping"]["memory"]["compress"]
-        assert compress["compressed"] == 2
-        assert compress["skipped"] == 1
-
-
-def test_dream_auto_consolidates_with_llm():
-    """提供 LLM 时，dream 自动合并相似 chunk。"""
-    from shibei.bm25 import BM25Index
-
-    class DummyLLM:
-        ready = True
-
-        def summarize(self, text, max_length=100):
-            return "Redis 使用 RDB 和 AOF 两种持久化机制。"
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = Path(tmpdir)
-        bm25 = BM25Index(str(db_path / "fts5.db"))
-        bm25.add_batch([
-            ("/a.md", "/a.md", "ai", "Redis 持久化机制包括 RDB 和 AOF 两种方式", "", ""),
-            ("/b.md", "/b.md", "ai", "Redis 使用 RDB 和 AOF 做持久化存储", "", ""),
-            ("/c.md", "/c.md", "ai", "Python 是一门流行的编程语言", "", ""),
-        ])
-
-        result = dream(
-            db_path, format="full", persist=False, compare=False,
-            housekeeping={"consolidate_threshold": 0.3},
-            llm_client=DummyLLM(),
-        )
-        assert result["status"] == "ok"
-        cons = result["housekeeping"]["consolidation"]
-        assert cons["applied"] is True
-        assert cons["removed"] >= 2
-        assert cons["inserted"] >= 1
+        mem = result["housekeeping"]["memory"]
+        assert mem["compressible_count"] == 3
+        assert len(mem["compressible_candidates"]) == 3
 
 

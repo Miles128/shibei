@@ -33,17 +33,3 @@ tagging:
       tag: daily-summary
     - pattern: ".*"
       tag: personal-note           # 兜底
-
-# === LLM 增强（可选，默认关闭） ===
-# 不配置也能用；开启后 dreaming、查询改写、事实提取会更强
-# 只支持联网大模型（OpenAI-compatible API），需要填写 api_key
-llm:
-  enabled: false
-  provider: openai-compatible      # openai | openai-compatible
-  model: deepseek-chat             # 也可换 gpt-4o-mini、deepseek-reasoner 等
-  base_url: https://api.deepseek.com/v1
-  api_key: ""                      # 必填：DeepSeek/OpenAI 的 key
-  temperature: 0.3
-  max_tokens: 1024
-  timeout: 30.0
-  system_prompt: "You are a helpful assistant for a Chinese personal knowledge base."
