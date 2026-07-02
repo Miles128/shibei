@@ -78,3 +78,27 @@ def test_extract_json_list_markdown_code_block():
     """LLM 输出 markdown JSON 代码块时正确提取"""
     text = '```json\n["a", "b"]\n```'
     assert LLMClient._extract_json_list(text) == ["a", "b"]
+
+
+def test_llm_classify_memory_lifespan():
+    """mock chat 后 classify_memory_lifespan 返回对应标签"""
+    cfg = LLMConfig(enabled=True, provider="openai-compatible", api_key="sk-test")
+    client = LLMClient(cfg)
+
+    client.chat = lambda prompt, system_prompt=None: "short_term"
+    assert client.classify_memory_lifespan("我明天下午 3 点开会") == "short_term"
+
+    client.chat = lambda prompt, system_prompt=None: "long_term"
+    assert client.classify_memory_lifespan("项目架构采用微服务") == "long_term"
+
+    client.chat = lambda prompt, system_prompt=None: "personal"
+    assert client.classify_memory_lifespan("我喜欢喝美式咖啡") == "personal"
+
+
+def test_llm_classify_fallback_to_long_term():
+    """LLM 输出无法识别时保守回退到 long_term"""
+    cfg = LLMConfig(enabled=True, provider="openai-compatible", api_key="sk-test")
+    client = LLMClient(cfg)
+    client.chat = lambda prompt, system_prompt=None: "我不知道"
+
+    assert client.classify_memory_lifespan("任意内容") == "long_term"

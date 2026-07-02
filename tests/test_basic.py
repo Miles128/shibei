@@ -6,14 +6,14 @@ from shibei.config import load_config
 def test_load_default_config():
     """默认配置可加载"""
     cfg = load_config("nonexistent.yaml")
-    assert cfg.chroma.collection == "knowledge_base"
-    assert cfg.embedding.model == "moka-ai/m3e-base"
+    assert cfg.storage.path == "~/.shibei/db"
+    assert cfg.storage.search_engine == "bm25"
 
 
 def test_load_custom_config():
     """自定义配置可加载"""
     cfg = load_config("config.yaml")
-    assert cfg.chroma.collection == "sihai_kb"
+    assert cfg.storage.path == "~/.shibei/db"
     assert len(cfg.sources) == 2
     assert len(cfg.tagging.rules) >= 4
 

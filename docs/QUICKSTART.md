@@ -8,12 +8,9 @@ cd shibei
 ./setup.sh
 ```
 
-`setup.sh` 做了三件事：
+`setup.sh` 做了两件事：
 - `pip install -e .` 安装依赖
-- 下载嵌入模型 `moka-ai/m3e-base`（约 440MB，首次需等几分钟）
 - 创建默认配置 `config.yaml`
-
-> 国内用户：`setup.sh` 自动用 `hf-mirror.com` 镜像下载模型。
 
 ## 2. 配置
 
@@ -37,7 +34,7 @@ shibei import
 ```
 Found 51 markdown files
   ...
-Total: 1012 chunks in 'knowledge_base'
+Total: 1012 chunks
 ```
 
 ## 4. 搜索

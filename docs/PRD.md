@@ -1,9 +1,8 @@
 # Shibei 产品需求文档（PRD）
 
-> 版本：v1.1
-> 日期：2026-06-28
+> 版本：v1.2
+> 日期：2026-07-02
 > 状态：持续迭代中
-> 作者：Shibei 项目
 
 ---
 
@@ -11,18 +10,18 @@
 
 ### 1.1 什么是 Shibei
 
-Shibei（十倍）是一个面向 AI Agent 的中文语义知识库 + 长期记忆系统，定位为 Agent 的“外部大脑”。它将个人本地文档（Markdown、Word、Excel、CSV、TXT 等）转化为可搜索、可关联、可演化的结构化记忆，并通过 MCP（Model Context Protocol）协议暴露给任何兼容的 AI Agent。
+Shibei（十倍）是一个面向 AI Agent 的**中文轻量知识库 + 长期记忆系统**，定位为 Agent 的“外部大脑”。它将个人本地文档（Markdown、Word、Excel、CSV、TXT）转化为可搜索、可关联、可演化的结构化记忆，并通过 MCP（Model Context Protocol）协议暴露给任何兼容的 AI Agent。
 
 ### 1.2 一句话定位
 
-**“中文语义知识库 + Agent 长期记忆 —— 给 AI Agent 用的个人外部大脑。”**
+**“中文轻量知识库 + Agent 长期记忆 —— 给 AI Agent 用的个人外部大脑。”**
 
 ### 1.3 文档目标
 
-- 明确 Shibei 的产品定位、目标用户与核心价值
+- 明确产品定位、目标用户与核心价值
 - 梳理竞品格局与差异化机会
 - 定义功能规格、技术架构与路线图
-- 为后续开发、发布、融资提供统一依据
+- 为开发提供统一依据
 
 ---
 
@@ -30,13 +29,13 @@ Shibei（十倍）是一个面向 AI Agent 的中文语义知识库 + 长期记�
 
 ### 2.1 问题定义
 
-AI Agent 正在从“单次会话工具”演化为“长期协作助手”。但 Agent 面临三个核心问题：
+AI Agent 正在从“单次会话工具”演化为“长期协作助手”，但面临三个核心问题：
 
 1. **上下文窗口有限**：无法一次性加载全部个人知识
 2. **会话隔离**：每次重启都丢失上下文，需要重复交代背景
 3. **知识沉淀困难**：个人笔记、文档、思考散落各处，Agent 无法按需调用
 
-现有方案要么太重（AnythingLLM、Dify、MaxKB 等企业平台），要么太贵/需要 LLM API（Mem0、Hindsight、Cognee），要么对中文支持弱（绝大多数海外方案），要么无法把“文档知识库”和“对话记忆”统一检索。
+现有方案要么太重（AnythingLLM、Dify、MaxKB 等企业平台），要么需要 LLM API（Mem0、Hindsight、Cognee），要么对中文支持弱，要么无法把“文档知识库”和“对话记忆”统一检索。
 
 ### 2.2 市场空白
 
@@ -45,16 +44,16 @@ AI Agent 正在从“单次会话工具”演化为“长期协作助手”。�
 | 企业级知识平台 | Dify、MaxKB、AnythingLLM | 太重、多容器、面向团队 |
 | Agent 交互记忆 | Mem0、Hindsight、Letta | 偏向行为记忆，需要 LLM API |
 | 知识图谱记忆 | Cognee、Zep/Graphiti | 构建慢、需 LLM、中文弱 |
-| 纯向量 RAG | 各类 Chroma 封装 | 缺乏 BM25 混合检索、MCP、中文优化 |
+| 纯向量 RAG | 各类 Chroma 封装 | 缺乏 BM25、MCP、中文优化 |
 | 文档库 + 记忆 + MCP | **Shibei** | 唯一同时覆盖三者的纯本地中文方案 |
 
 **Shibei 的机会**：在“个人 + 中文 + 轻量 + 本地 + MCP + 文档记忆统一”的交叉点上，做最贴合个人用户的 Agent 外部知识库。
 
 ### 2.3 产品愿景
 
-**短期**：中文个人知识库 MCP Server
-**中期**：个人 AI 记忆中枢（文档库 + 交互记忆 + 跨文档洞察）
-**长期**：每个人的私有 AI 第二大脑
+- **短期**：中文个人知识库 MCP Server
+- **中期**：个人 AI 记忆中枢（文档库 + 交互记忆 + 跨文档洞察）
+- **长期**：每个人的私有 AI 第二大脑
 
 ---
 
@@ -84,53 +83,52 @@ AI Agent 正在从“单次会话工具”演化为“长期协作助手”。�
 
 ### 4.1 价值主张陈述
 
-> 对希望让 AI Agent 长期记住并使用个人知识的中文用户而言，Shibei 是一个零依赖、纯本地、MCP 原生的语义知识库 + 长期记忆系统。与 Hy-Memory 相比，它开源可控且支持文档库；与 TencentDB Agent Memory 相比，它原生 MCP 化且更聚焦个人场景；与 agentmemory 相比，它支持中文文档库、一句话摘要召回和轻量关联。Shibei 是目前唯一同时覆盖“文档知识 + 对话记忆 + MCP + 纯本地 + 中文”的方案。
+> 对希望让 AI Agent 长期记住并使用个人知识的中文用户而言，Shibei 是一个**零外部依赖、纯本地、MCP 原生**的轻量知识库 + 长期记忆系统。与 Hy-Memory 相比，它开源可控且支持文档库；与 TencentDB Agent Memory 相比，它原生 MCP 化且更聚焦个人场景；与 agentmemory 相比，它支持中文文档库、一句话摘要召回和轻量关联。Shibei 是目前唯一同时覆盖“文档知识 + 对话记忆 + MCP + 纯本地 + 中文”的方案。
 
 ### 4.2 核心差异化
 
 | 维度 | Shibei | 竞品现状 |
 |------|--------|---------|
-| **中文原生** | 默认 M3E/BGE-M3，BM25 bigram+可选 jieba，中文摘要生成 | Hy-Memory/TencentDB 中文优化；agentmemory 默认英文 |
-| **零 LLM 依赖（搜索阶段）** | 搜索、BM25 召回、 dreaming 基础版无需 LLM API | agentmemory 无需 LLM；Hy-Memory/TencentDB 需要 |
-| **纯本地轻量** | pip install，SQLite+ChromaDB，秒级启动 | 四者均偏本地，但 Shibei 同时支持文档库+MCP+记忆 |
+| **中文原生** | BM25 + jieba/bigram，中文摘要生成 | Hy-Memory/TencentDB 中文优化；agentmemory 默认英文 |
+| **零 LLM 依赖（搜索阶段）** | 搜索、BM25 召回、Dreaming 基础版无需 LLM API | agentmemory 无需 LLM；Hy-Memory/TencentDB 需要 |
+| **纯本地轻量** | `pip install`，SQLite FTS5，秒级启动 | 四者均偏本地，但 Shibei 同时支持文档库+MCP+记忆 |
 | **MCP 原生** | stdio MCP server，5 个工具 | Hy-Memory 是插件；TencentDB/agentmemory 无原生 MCP |
 | **文档知识库** | 完整支持 Markdown/Word/Excel 导入、分块、搜索 | 三者均不支持通用文档库 |
-| **对话记忆** | `shibei_remember` + SQLite + BM25/向量/Hybrid | Hy-Memory/TencentDB/agentmemory 均支持 |
+| **对话记忆** | `shibei_remember` + SQLite + BM25 + 版本链 | Hy-Memory/TencentDB/agentmemory 均支持 |
 | **一句话摘要召回** | 默认开启 chunk 摘要，RRF 融合正文+摘要 | 多数竞品无 |
 | **轻量关联** | 标签共现、Markdown 链接、关键词共现，无需图数据库 | 多数竞品依赖向量或图谱 |
 | **Profile 多场景** | 面试/工作/日记等多知识库切换 | 多数无此概念 |
+| **Dreaming 自动整理** | 清理过期记忆、压缩旧短期记忆、合并相似 chunk | 竞品无 |
 
 ---
 
-## 5. 竞品分析与差异化
+## 5. 竞品分析
 
-详细分析见 [docs/COMPARISON.md](COMPARISON.md)。本节为结论摘要。
+### 5.1 主要竞品
 
-### 5.1 主要竞品（聚焦开源记忆方案）
-
-| 竞品 | 定位 | 对 Shibei 的威胁 | Shibei 的机会 |
-|------|------|----------------|--------------|
+| 竞品 | 定位 | 威胁 | Shibei 的机会 |
+|------|------|------|--------------|
 | **Hy-Memory** | 闭源 Agent 记忆压缩插件 | 腾讯背书、中文原生、版本演化链先进 | 闭源不可控；不支持文档库；仅特定 IDE |
 | **TencentDB Agent Memory** | 开源四层记忆架构 | 同路线（SQLite+中文）、Apache 2.0 | 无原生 MCP；知名度低；文档库缺失 |
 | **agentmemory** | Coding Agent 记忆工具 | 三流融合检索精度高、零 LLM 依赖 | 仅适合 Coding；默认英文；无文档库 |
 | **Shibei** | 中文个人文档知识库 + MCP + 记忆 | — | 唯一同时覆盖文档库 + MCP + 纯本地 + 中文 + 记忆 |
 
-### 5.2 竞品的启示
+### 5.2 竞品启示
 
-| 竞品 | Shibei 应学习的点 | Shibei 应避免的坑 |
-|------|------------------|------------------|
+| 竞品 | 应学习 | 应避免 |
+|------|--------|--------|
 | **Hy-Memory** | supersedes 版本演化链；记忆压缩分层 | 不要闭源；不要绑定特定 IDE |
 | **TencentDB Agent Memory** | 四层渐进式架构；中文本地优化 | 不要缺失 MCP 和文档库 |
-| **agentmemory** | 三流融合检索；零 LLM 依赖设计 | 不要局限于 Coding Agent |
+| **agentmemory** | 零 LLM 依赖设计 | 不要局限于 Coding Agent |
 
 ### 5.3 竞争策略
 
 1. **错位竞争**：不做闭源插件，不做通用 Agent 平台，专注“个人中文文档知识库 + 对话记忆”
-2. **MCP-first**：Hy-Memory/TencentDB/agentmemory 均不原生 MCP，这是 Shibei 最大壁垒
-3. **文档+记忆统一**：其他三者只做对话/行为记忆，Shibei 能把文档知识和对话记忆融合检索
-4. **摘要+关联增强召回**：一句话摘要召回和轻量关联提升搜索质量，形成产品护城河
+2. **MCP-first**：竞品均不原生 MCP，这是 Shibei 最大壁垒
+3. **文档+记忆统一**：其他产品只做对话/行为记忆，Shibei 能把文档知识和对话记忆融合检索
+4. **摘要+关联增强召回**：一句话摘要召回和轻量关联提升搜索质量
 5. **隐私优势**：纯本地，数据不上云，无 LLM API 也能用
-6. **中文优势**：默认中文嵌入模型 + 中文 BM25 分词 + 中文 dreaming + 中文摘要
+6. **中文优势**：BM25 中文分词 + 中文 Dreaming + 中文摘要
 
 ---
 
@@ -143,16 +141,15 @@ AI Agent 正在从“单次会话工具”演化为“长期协作助手”。�
 | 文档导入 | 多格式解析、增量导入、自动标签 | P0 | 已完成 |
 | 分块引擎 | 标题切分、句子边界、overlap、parent-child | P0 | 已完成 |
 | 一句话摘要 | 默认开启：每个 chunk 生成中文摘要，建摘要索引 | P0 | 已完成 |
-| 搜索引擎 | BM25 / Vector / Hybrid+RRF，正文+摘要双索引 | P0 | 已完成 |
+| 搜索引擎 | BM25 全文搜索，正文+摘要双索引 | P0 | 已完成 |
 | 轻量关联 | 标签共现、Markdown 链接、关键词共现 | P1 | 已完成 |
 | Profile | 多场景配置切换 | P1 | 已完成 |
 | MCP Server | search / import / list_sources / dream / remember | P0 | 已完成 |
-| 对话记忆 | `shibei_remember` + SQLite + BM25/向量/Hybrid + 版本链 | P0 | 已完成 |
-| Dreaming | 跨文档关联、主题模式、洞察、历史归档压缩 | P1 | 已完成 |
-| 去重压缩 | 精确去重、语义去重（规划中） | P1 | 已完成精确去重 |
+| 对话记忆 | `shibei_remember` + SQLite + BM25 + 版本链 | P0 | 已完成 |
+| Dreaming | 跨文档关联、洞察、自动整理（记忆清理/压缩/相似 chunk 合并） | P1 | 已完成 |
+| 去重压缩 | 精确去重、相似 chunk 合并 | P1 | 已完成 |
 | 一键安装 | `shibei init` 初始化配置和环境 | P1 | 已完成 |
 | 查询改写 | LLM 增强查询重写（规划中） | P2 | 待开发 |
-| 重排序 | cross-encoder rerank（规划中） | P2 | 待开发 |
 | Web/Notion 连接器 | 在线数据源导入（规划中） | P2 | 待开发 |
 
 ### 6.2 详细功能规格
@@ -164,7 +161,6 @@ AI Agent 正在从“单次会话工具”演化为“长期协作助手”。�
 - 全量重建：`--full` 参数忽略缓存
 - 自动标签：基于正则规则扫描文件路径 + 内容前 500 字
 - 自动摘要：默认开启，为每个 chunk 生成一句话中文摘要
-- 多线程：未来支持并行解析
 
 #### 6.2.2 分块引擎
 
@@ -177,12 +173,10 @@ AI Agent 正在从“单次会话工具”演化为“长期协作助手”。�
 
 #### 6.2.3 搜索引擎
 
-- **BM25**：SQLite FTS5，中文 bigram+可选 jieba
+- **BM25**：SQLite FTS5，中文 bigram + 可选 jieba
   - content_tokens：原始正文索引
   - summary_tokens：一句话摘要索引
   - 搜索时 RRF 融合正文和摘要结果
-- **Vector**：ChromaDB + sentence-transformers
-- **Hybrid**：BM25 + Vector 通过 RRF（Reciprocal Rank Fusion，k=60）融合
 - 支持标签过滤、limit 控制
 - 返回结果附带 `related` 相关推荐
 
@@ -190,10 +184,10 @@ AI Agent 正在从“单次会话工具”演化为“长期协作助手”。�
 
 | 工具名 | 参数 | 返回 |
 |--------|------|------|
-| `shibei_search` | query, limit, tag, engine | 排序结果列表（含 parent_text、related） |
+| `shibei_search` | query, limit, tag | 排序结果列表（含 parent_text、related） |
 | `shibei_import` | dirs（可选）, full（可选） | 导入统计 |
 | `shibei_list_sources` | limit, offset | 文件列表 + 聚合摘要 |
-| `shibei_dream` | format（brief/full）, persist | 洞察报告 |
+| `shibei_dream` | format（brief/full）, persist | 洞察报告 + 整理统计 |
 | `shibei_remember` | fact, category, source, tags | 写入结果（含 memory_id） |
 
 #### 6.2.5 对话记忆
@@ -212,8 +206,7 @@ CREATE TABLE memories (
     created_at TEXT,               -- ISO 8601
     expires_at TEXT,               -- 过期时间（可选）
     supersedes TEXT,               -- 替代的上一版本 memory_id（版本链）
-    superseded_by TEXT,            -- 被哪个新版本替代
-    embedding BLOB                 -- 向量表示（可选）
+    superseded_by TEXT             -- 被哪个新版本替代
 );
 
 CREATE VIRTUAL TABLE memories_fts USING fts5(
@@ -222,46 +215,21 @@ CREATE VIRTUAL TABLE memories_fts USING fts5(
 );
 ```
 
-**召回模式**：
-
-- `bm25`：仅 FTS5 全文检索
-- `vector`：基于存储的 embedding 做向量相似度
-- `hybrid`（默认）：BM25 + 向量 RRF 融合
-
-**MCP 工具 `shibei_remember`**：
-
-```json
-{
-  "name": "shibei_remember",
-  "description": "将对话或交互中的重要事实写入 Shibei 长期记忆。Agent 应在遇到用户偏好、项目背景、关键决策等信息时主动调用。",
-  "inputSchema": {
-    "type": "object",
-    "properties": {
-      "fact": {"type": "string", "description": "要记忆的事实，建议用简洁的第三人称陈述句"},
-      "category": {"type": "string", "enum": ["user", "agent", "project", "preference"], "default": "user"},
-      "source": {"type": "string", "description": "来源会话ID或工具调用ID，便于追溯"},
-      "tags": {"type": "string", "description": "逗号分隔标签，如 '面试,Redis'"},
-      "expires_at": {"type": "string", "description": "过期时间 ISO 8601（可选）"}
-    },
-    "required": ["fact"]
-  }
-}
-```
+**召回模式**：仅 BM25 FTS5 全文检索。
 
 **版本链逻辑**（借鉴 Hy-Memory）：
 
 1. 写入新 fact 时，先检索相似度最高的现有记忆
-2. 优先使用向量相似度判断；无 embedding 时回退到 BM25 + Jaccard
-3. 如果语义相似度 > 阈值（默认 0.7，可配置），新记忆标记 `supersedes = 旧记忆.id`
+2. 使用 BM25 + Jaccard 判断语义相似
+3. 如果相似度 > 阈值（默认 0.7，可配置），新记忆标记 `supersedes = 旧记忆.id`
 4. 旧记忆不删除，仅标记为 `superseded_by = 新记忆.id`
 5. 默认搜索只返回最新版本；`dream` 和审计场景可查看历史链
 
 **与文档库的融合搜索**：
 
 ```python
-# Searcher 同时检索 chunks 和 memories
 chunk_results = search_chunks(query)
-memory_results = search_memories(query)  # 默认 hybrid
+memory_results = search_memories(query)
 result = {
     "results": chunk_results,
     "memories": memory_results,
@@ -285,7 +253,10 @@ result = {
 - 跨文档连接：共享关键词的文档对
 - 主题模式：标签下高频主题
 - 洞察：全局高频主题、孤立文档
-- 历史归档：保留最近 N 次全量，旧记录压缩为摘要
+- **自动整理**：
+  - 清理过期记忆
+  - 使用 LLM 判断记忆生命周期，仅压缩短期记忆，保留长期/个人记忆
+  - 基于 Overlap 系数聚类合并相似 chunk
 
 ### 6.3 非功能需求
 
@@ -323,31 +294,31 @@ result = {
 │           Shibei 服务层                 │
 │  ┌─────────┐ ┌─────────┐ ┌───────────┐ │
 │  │ Searcher│ │ Importer│ │ Dreamer   │ │
-│  │ (RRF +  │ │(summary │ │           │ │
+│  │(BM25 +  │ │(summary │ │(关联+整理)│ │
 │  │ related)│ │ + dedup)│ │           │ │
 │  └────┬────┘ └────┬────┘ └─────┬─────┘ │
 │  ┌─────────┐ ┌───────────────────┐     │
 │  │MemoryStore│  │ RelatedFinder   │     │
-│  │(BM25+Vec)│  │(tags/links/    │     │
+│  │(BM25)   │  │(tags/links/    │     │
 │  │+版本链   │  │ keywords)       │     │
 │  └────┬────┘ └───────────────────┘     │
 └───────┼─────────────────────────────────┘
         │
         ▼
 ┌─────────────────────────────────────────┐
-│           存储层                        │
-│  ┌─────────────┐  ┌─────────────────┐   │
-│  │ ChromaDB    │  │ SQLite FTS5     │   │
-│  │ (向量)       │  │ (BM25 全文索引)  │   │
-│  └─────────────┘  └─────────────────┘   │
-│  ┌─────────────┐  ┌─────────────────┐   │
-│  │ manifest    │  │ chunk_hashes    │   │
-│  │ (增量追踪)   │  │ (精确去重)       │   │
-│  └─────────────┘  └─────────────────┘   │
-│  ┌─────────────┐  ┌─────────────────┐   │
-│  │ memories    │  │ memories_fts    │   │
-│  │ (对话记忆)   │  │ (BM25 记忆索引)  │   │
-│  └─────────────┘  └─────────────────┘   │
+│           存储层（SQLite）               │
+│  ┌─────────────────┐ ┌─────────────────┐│
+│  │ SQLite FTS5     │ │ manifest        ││
+│  │ (BM25 全文索引)  │ │ (增量追踪)       ││
+│  └─────────────────┘ └─────────────────┘│
+│  ┌─────────────────┐ ┌─────────────────┐│
+│  │ chunk_hashes    │ │ memories        ││
+│  │ (精确去重)       │ │ (对话记忆)       ││
+│  └─────────────────┘ └─────────────────┘│
+│  ┌─────────────────┐                    │
+│  │ memories_fts    │                    │
+│  │ (BM25 记忆索引)  │                    │
+│  └─────────────────┘                    │
 └─────────────────────────────────────────┘
 ```
 
@@ -359,11 +330,11 @@ result = {
 | Chunker | `src/shibei/chunker.py` | 文档分块、overlap、parent-child |
 | Importer | `src/shibei/importer.py` | 扫描、解析、增量导入、去重、摘要生成 |
 | BM25 | `src/shibei/bm25.py` | SQLite FTS5 全文索引（正文+摘要双列） |
-| Embedding | `src/shibei/embedding.py` | 嵌入模型懒加载 |
-| Searcher | `src/shibei/searcher.py` | 三引擎搜索分发 + 记忆召回 + 相关推荐 |
-| MemoryStore | `src/shibei/memory.py` | 对话记忆存储 + BM25/向量/Hybrid 召回 + 版本链 |
+| Searcher | `src/shibei/searcher.py` | BM25 搜索 + 记忆召回 + 相关推荐 |
+| MemoryStore | `src/shibei/memory.py` | 对话记忆存储 + BM25 召回 + 版本链 |
 | RelatedFinder | `src/shibei/related.py` | 标签/链接/关键词共现关联发现 |
-| Dreamer | `src/shibei/dreamer.py` | 跨文档关联挖掘、历史归档 |
+| Dreamer | `src/shibei/dreamer.py` | 跨文档关联挖掘、自动整理 |
+| Consolidator | `src/shibei/consolidator.py` | 相似 chunk 聚类合并 |
 | Server | `src/shibei/server.py` | MCP JSON-RPC server |
 | CLI | `src/shibei/cli.py` | 命令行接口 |
 
@@ -404,34 +375,9 @@ CREATE VIRTUAL TABLE chunks_fts USING fts5(
 );
 ```
 
-### 8.3 ChromaDB Collection
+### 8.3 对话记忆表
 
-- `ids`: chunk_id
-- `documents`: text
-- `metadatas`: {source, tags, parent_id, summary}
-- 父文本不存入向量库，仅在返回时拼接
-
-### 8.4 对话记忆表
-
-```sql
-CREATE TABLE memories (
-    id TEXT PRIMARY KEY,
-    fact TEXT NOT NULL,
-    category TEXT,
-    source TEXT,
-    tags TEXT,
-    created_at TEXT,
-    expires_at TEXT,
-    supersedes TEXT,
-    superseded_by TEXT,
-    embedding BLOB
-);
-
-CREATE VIRTUAL TABLE memories_fts USING fts5(
-    fact, tags, category,
-    content='memories', content_rowid='id'
-);
-```
+见 6.2.5。
 
 ---
 
@@ -441,23 +387,21 @@ CREATE VIRTUAL TABLE memories_fts USING fts5(
 
 ```bash
 # 初始化
-shibei init [--extras] [--skip-model] [--force]
+shibei init [--force]
 
 # 导入
 shibei import [--full] [--dirs DIR1,DIR2]
 
 # 搜索
-shibei search "query" [--tag TAG] [--limit N] [--engine bm25|vector|hybrid]
+shibei search "query" [--tag TAG] [--limit N]
 
 # 列出来源
 shibei list-sources [--limit N] [--offset N]
 
 # Dreaming
-shibei dream run
-shibei dream compress [--keep N]
+shibei dream run [--apply-consolidation]
 shibei dream clean [--days N]
 shibei dream history
-shibei dream diff
 
 # 对话记忆
 shibei remember "用户在面试准备中重点关注 Redis 和 Kafka" --tags 面试,Redis
@@ -504,30 +448,28 @@ memories = brain.search_memories("面试准备")
 ### 10.1 已完成（v0.3.x）
 
 - [x] 多格式文档导入（md/txt/docx/xlsx/csv）
-- [x] BM25 / Vector / Hybrid 三引擎搜索
+- [x] BM25 全文搜索，正文+摘要双索引
 - [x] 增量导入 + 精确去重
 - [x] Profile 多场景切换
-- [x] MCP Server（5 个工具：search/import/list_sources/dream/remember）
-- [x] 对话记忆 + 版本链 + BM25/向量/Hybrid 召回
+- [x] MCP Server（5 个工具）
+- [x] 对话记忆 + 版本链 + BM25 召回
 - [x] 一句话摘要 + 正文/摘要双索引 RRF 融合
 - [x] 轻量关联（标签共现、Markdown 链接、关键词共现）
-- [x] Dreaming 基础版 + 历史归档压缩
+- [x] Dreaming 跨文档洞察 + 自动整理（记忆清理/压缩/相似 chunk 合并）
 - [x] 中文分词优化（jieba 可选）
 - [x] Parent-child chunk + overlap
 - [x] `shibei init` 一键安装
 
-### 10.2 短期（v0.4.x，未来 1-2 个月）
+### 10.2 短期（v0.4.x）
 
-- [ ] **语义去重**：基于 embedding 相似度合并近似 chunk
-- [ ] **导入进度条与并行解析**
-- [ ] **更完善的中文停用词表**
-- [ ] **记忆过期自动清理**
+- [ ] 导入进度条与并行解析
+- [ ] 更完善的中文停用词表
+- [ ] 记忆过期自动清理策略可配置
 
-### 10.3 中期（v0.5.x，未来 3-6 个月）
+### 10.3 中期（v0.5.x）
 
 - [ ] LLM 增强 dreaming：让 LLM 生成自然语言洞察
 - [ ] 查询改写：口语查询 → 检索友好关键词
-- [ ] Cross-encoder 重排序
 - [ ] Web 页面连接器（URL 抓取）
 - [ ] Notion / Obsidian 连接器
 - [ ] HTTP API server（除 MCP 外）
@@ -535,8 +477,7 @@ memories = brain.search_memories("面试准备")
 ### 10.4 长期（v1.0+）
 
 - [ ] 个人 AI 记忆中枢：文档库 + 交互记忆 + 日程/邮件等多源数据统一
-- [ ] 本地小模型辅助：用本地 SLM 替代部分 LLM 功能，进一步降低 API 依赖
-- [ ] 三流融合检索：在 BM25+向量基础上引入轻量级图谱（向 agentmemory 看齐）
+- [ ] 本地小模型辅助：用本地 SLM 替代部分 LLM 功能
 - [ ] 插件生态：自定义 parser、connector、search strategy
 
 ---
@@ -550,9 +491,8 @@ memories = brain.search_memories("面试准备")
 | 性能 | 导入速度 | > 10 文件/分钟 |
 | 质量 | Top-5 搜索命中率（人工评估） | > 85% |
 | 质量 | Dreaming 洞察可用率 | > 70% |
-| 社区 | GitHub Stars | 1K+（6 个月内） |
 | 生态 | MCP 兼容 Agent 数 | 支持 Claude/Cursor/Trae/Hermes |
-| 质量 | 测试覆盖率 | 98+ 个测试持续通过 |
+| 质量 | 测试覆盖率 | 核心测试持续通过 |
 
 ---
 
@@ -562,12 +502,11 @@ memories = brain.search_memories("面试准备")
 
 | 风险 | 影响 | 缓解策略 |
 |------|------|---------|
-| 技术护城河浅 | 高 | 强化中文优化、Dreaming、摘要召回、轻量关联、本地小模型辅助 |
+| 技术护城河浅 | 高 | 强化中文优化、Dreaming、摘要召回、轻量关联 |
 | 竞品快速跟进 | 中 | 聚焦个人场景，保持轻量 |
-| 嵌入模型下载慢 | 中 | 支持 HF 镜像、预下载、可选模型 |
 | 摘要生成增加 LLM 成本 | 中 | 默认开启但可一键关闭；批量调用减少请求数 |
 | 用户增长慢 | 中 | 做好 MCP 接入文档，录制短视频教程 |
-| 大库性能下降 | 中 | 引入批量查询、索引优化、语义去重 |
+| 大库性能下降 | 中 | 引入批量查询、索引优化、相似 chunk 合并 |
 
 ### 12.2 关键假设
 
@@ -586,7 +525,6 @@ memories = brain.search_memories("面试准备")
 - [README.md](../README.md)
 - [CONFIG.md](CONFIG.md)
 - [MCP_INTEGRATION.md](MCP_INTEGRATION.md)
-- [COMPARISON.md](COMPARISON.md)
 
 ### 13.2 Sources
 

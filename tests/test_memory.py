@@ -2,6 +2,7 @@
 
 import pytest
 import tempfile
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from shibei.memory import MemoryStore
@@ -100,18 +101,87 @@ def test_forget_unlinks_superseded(store):
     assert old_updated["superseded_by"] == ""
 
 
-def test_search_mode_bm25_fallback():
-    """无 embedding 模型时，hybrid 模式应回退到 BM25。"""
-    import tempfile
-    with tempfile.TemporaryDirectory() as tmpdir:
-        store = MemoryStore(tmpdir)
-        store.add("用户喜欢 Python 编程", category="preference", supersede_threshold=0.95)
-        store.add("用户喜欢 Go 编程", category="preference", supersede_threshold=0.95)
+def test_cleanup_expired(store):
+    """清理已过期的记忆。"""
+    from datetime import datetime, timezone, timedelta
+    store.add("长期有效", category="user")
+    store.add("临时事项", category="user", expires_at=(datetime.now(timezone.utc) - timedelta(days=1)).isoformat())
 
-        hybrid = store.search("Python", mode="hybrid")
-        bm25 = store.search("Python", mode="bm25")
-        assert len(hybrid) == len(bm25)
-        assert hybrid[0]["fact"] == bm25[0]["fact"]
+    assert store.count() == 2
+    deleted = store.cleanup_expired()
+    assert deleted == 1
+    assert store.count() == 1
 
-        vector = store.search("Python", mode="vector")
-        assert vector == []
+
+def test_cleanup_expired_keeps_future(store):
+    """未过期记忆不应被清理。"""
+    from datetime import datetime, timezone, timedelta
+    store.add("未来事项", category="user", expires_at=(datetime.now(timezone.utc) + timedelta(days=1)).isoformat())
+
+    assert store.cleanup_expired() == 0
+    assert store.count() == 1
+
+
+def test_compress_old_skips_long_term_and_personal(store):
+    """压缩旧记忆时跳过 long_term 和 personal。"""
+    class DummyLLM:
+        ready = True
+        def classify_memory_lifespan(self, fact):
+            if "临时" in fact:
+                return "short_term"
+            if "个人" in fact:
+                return "personal"
+            return "long_term"
+        def summarize(self, text, max_length=100):
+            return f"摘要：{text[:10]}"
+
+    # 用旧日期写入
+    old = (datetime.now(timezone.utc) - timedelta(days=60)).isoformat(timespec="seconds")
+    store.add("临时计划 A", category="user", created_at=old)
+    store.add("个人身份核心", category="user", created_at=old)
+    store.add("项目长期架构", category="project", created_at=old)
+
+    result = store.compress_old(max_age_days=30, keep_recent=0, llm_client=DummyLLM())
+    assert result["compressed"] == 1
+    assert result["skipped"] == 2
+    assert result["deleted"] == 0
+
+    active = store.list()
+    assert any("摘要" in r["fact"] for r in active)
+    assert any("个人身份核心" == r["fact"] for r in active)
+    assert any("项目长期架构" == r["fact"] for r in active)
+
+
+def test_compress_old_deletes_when_summary_fails(store):
+    """摘要失败时删除短期记忆。"""
+    class DummyLLM:
+        ready = True
+        def classify_memory_lifespan(self, fact):
+            return "short_term"
+        def summarize(self, text, max_length=100):
+            raise RuntimeError("mock failure")
+
+    old = (datetime.now(timezone.utc) - timedelta(days=60)).isoformat(timespec="seconds")
+    store.add("临时事项 X", category="user", created_at=old)
+
+    result = store.compress_old(max_age_days=30, keep_recent=0, llm_client=DummyLLM())
+    assert result["deleted"] == 1
+    assert store.count() == 0
+
+
+def test_compress_old_keeps_recent(store):
+    """最近 keep_recent 条记忆应保留。"""
+    class DummyLLM:
+        ready = True
+        def classify_memory_lifespan(self, fact): return "short_term"
+        def summarize(self, text, max_length=100): return "摘要"
+
+    for i in range(5):
+        store.add(f"短期 {i}", category="user")
+
+    result = store.compress_old(max_age_days=0, keep_recent=2, llm_client=DummyLLM())
+    # 最近 2 条保留，前 3 条压缩
+    assert result["compressed"] == 3
+    assert store.count() == 5
+
+

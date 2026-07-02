@@ -163,6 +163,7 @@ class BM25Index:
         parent_text = row[5] if len(row) > 5 else ""
         parent_id = row[6] if len(row) > 6 else ""
         rank = row[7] if len(row) > 7 else row[4]
+        rank = float(rank) if rank else 0.0
         item = {
             "_rowid": row[0],
             "source": source,
@@ -275,3 +276,30 @@ class BM25Index:
                 f"SELECT DISTINCT source FROM {CONTENT_TABLE} ORDER BY source"
             ).fetchall()
             return [r[0] for r in rows]
+
+    def delete_by_rowids(self, rowids: list[int]):
+        """按 rowid 精确删除 chunks 及其 FTS 索引。
+
+        FTS5 contentless 表需用 'delete' 命令 + 原始 tokens 删除。
+        """
+        if not rowids:
+            return
+
+        with sqlite3.connect(self.db_path, timeout=30.0) as conn:
+            for rowid in rowids:
+                row = conn.execute(
+                    f"SELECT content, {SUMMARY_COL} FROM {CONTENT_TABLE} WHERE rowid = ?",
+                    (rowid,),
+                ).fetchone()
+                if not row:
+                    continue
+                content, summary = row
+                content_tokens = tokenize_text(content or "")
+                summary_tokens = tokenize_text(summary or "")
+                conn.execute(
+                    f"INSERT INTO {FTS_TABLE}({FTS_TABLE}, rowid, content_tokens, summary_tokens) "
+                    f"VALUES('delete', ?, ?, ?)",
+                    (rowid, content_tokens, summary_tokens),
+                )
+                conn.execute(f"DELETE FROM {CONTENT_TABLE} WHERE rowid = ?", (rowid,))
+            conn.commit()

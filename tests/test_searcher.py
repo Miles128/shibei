@@ -3,7 +3,7 @@
 import tempfile
 from pathlib import Path
 
-from shibei.config import Config, ChromaConfig
+from shibei.config import Config, StorageConfig
 from shibei.searcher import Searcher
 from shibei.llm import LLMConfig, LLMClient
 
@@ -23,7 +23,7 @@ def test_searcher_bm25_basic():
     """BM25 基本搜索"""
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = _make_bm25_db(tmpdir)
-        cfg = Config(chroma=ChromaConfig(path=str(db_path), search_engine="bm25"))
+        cfg = Config(storage=StorageConfig(path=str(db_path)))
         searcher = Searcher(cfg)
         result = searcher.search("人工智能", limit=5)
         assert result["total"] >= 1
@@ -35,7 +35,7 @@ def test_searcher_llm_rewrite_query():
     """LLM 启用时会改写查询并用改写结果搜索"""
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = _make_bm25_db(tmpdir)
-        cfg = Config(chroma=ChromaConfig(path=str(db_path), search_engine="bm25"))
+        cfg = Config(storage=StorageConfig(path=str(db_path)))
 
         llm = LLMClient(LLMConfig(enabled=True, provider="openai-compatible", api_key="sk-test"))
         llm.chat = lambda prompt, system_prompt=None: "人工智能"
@@ -52,7 +52,7 @@ def test_searcher_llm_rewrite_failure_degrade():
     """LLM 改写失败时回退到原查询"""
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = _make_bm25_db(tmpdir)
-        cfg = Config(chroma=ChromaConfig(path=str(db_path), search_engine="bm25"))
+        cfg = Config(storage=StorageConfig(path=str(db_path)))
 
         llm = LLMClient(LLMConfig(enabled=True, provider="openai-compatible", api_key="sk-test"))
         llm.chat = lambda prompt, system_prompt=None: (_ for _ in ()).throw(

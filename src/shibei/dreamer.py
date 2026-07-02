@@ -7,10 +7,8 @@
   4. 生成洞察报告
   5. 持久化 dream 结果，支持增量对比
 
-数据源支持：
+数据源：
   - BM25 (FTS5 SQLite)：从 chunks 表读取
-  - Vector (ChromaDB)：从 collection 读取
-  - Hybrid：优先 BM25（含原文），fallback 到 Vector
 """
 
 import re
@@ -25,6 +23,20 @@ from typing import Optional
 from .llm import LLMClient
 
 logger = logging.getLogger(__name__)
+
+
+# 整理（housekeeping）默认配置
+DEFAULT_HOUSEKEEPING = {
+    "cleanup_expired_memories": True,
+    "compress_old_memories": True,
+    "consolidate_chunks": True,
+    "compress_max_age_days": 30,
+    "compress_keep_recent": 10,
+    "consolidate_threshold": 0.6,
+    "consolidate_min_cluster_size": 2,
+    "consolidate_max_chunks": 500,
+    "consolidate_apply": False,
+}
 
 
 # 停用词（中文高频无意义词 + 英文常见词）
@@ -85,17 +97,18 @@ def load_chunks_from_bm25(db_path: Path, max_chunks: int = 500) -> list[dict]:
         if total > max_chunks:
             step = total // max_chunks
             rows = conn.execute(
-                f"SELECT source, file_path, tags, content FROM chunks "
+                f"SELECT rowid, source, file_path, tags, content FROM chunks "
                 f"WHERE rowid IN (SELECT rowid FROM chunks WHERE rowid % {step} = 0 LIMIT {max_chunks})"
             ).fetchall()
         else:
             rows = conn.execute(
-                "SELECT source, file_path, tags, content FROM chunks"
+                "SELECT rowid, source, file_path, tags, content FROM chunks"
             ).fetchall()
 
     chunks = []
-    for source, file_path, tags, content in rows:
+    for rowid, source, file_path, tags, content in rows:
         chunks.append({
+            "_rowid": rowid,
             "source": source,
             "file_path": file_path,
             "tags": tags,
@@ -105,80 +118,14 @@ def load_chunks_from_bm25(db_path: Path, max_chunks: int = 500) -> list[dict]:
     return chunks
 
 
-def load_chunks_from_vector(db_path: Path, collection_name: str = "knowledge_base",
-                            max_chunks: int = 500) -> list[dict]:
-    """从 ChromaDB 向量库加载 chunks。
+def load_chunks(db_path: Path, max_chunks: int = 500) -> list[dict]:
+    """从 BM25 FTS5 索引加载 chunks（采样，避免超大库全量加载）。
 
     Args:
-        db_path: ChromaDB 持久化路径
-        collection_name: collection 名称
-        max_chunks: 最大加载条数（ChromaDB get() 不支持采样，全量取后切片）
-    """
-    try:
-        import chromadb
-    except ImportError:
-        return []
-
-    if not db_path.exists():
-        return []
-
-    try:
-        client = chromadb.PersistentClient(path=str(db_path))
-        collection = client.get_collection(collection_name)
-    except Exception as e:
-        # ChromaDB 可能抛 NotFoundError（collection 不存在）等多种异常
-        logger.warning("ChromaDB collection 获取失败: %s", e)
-        return []
-
-    # 全量取 metadata + documents（不含 embeddings，省内存）
-    try:
-        result = collection.get(include=["metadatas", "documents"])
-    except Exception as e:
-        logger.warning("ChromaDB 读取失败: %s", e)
-        return []
-
-    chunks = []
-    ids = result.get("ids", [])
-    docs = result.get("documents", [])
-    metas = result.get("metadatas", [])
-
-    # 采样：若超过 max_chunks，均匀采样
-    total = len(ids)
-    if total > max_chunks:
-        step = total // max_chunks
-        indices = list(range(0, total, step))[:max_chunks]
-    else:
-        indices = list(range(total))
-
-    for i in indices:
-        content = docs[i] if i < len(docs) else ""
-        meta = metas[i] if i < len(metas) else {}
-        chunks.append({
-            "source": meta.get("source", f"unknown_{i}"),
-            "file_path": meta.get("file", ""),
-            "tags": meta.get("tags", ""),
-            "text": content[:500],
-            "keywords": extract_keywords(content),
-        })
-    return chunks
-
-
-def load_chunks(db_path: Path, collection_name: str = "knowledge_base",
-                max_chunks: int = 500) -> list[dict]:
-    """加载 chunks：优先 BM25（含原文），fallback 到 Vector。
-
-    Args:
-        db_path: 数据存储根路径（含 fts5.db 和 chroma 持久化目录）
-        collection_name: ChromaDB collection 名称
+        db_path: 数据存储根路径（含 fts5.db）
         max_chunks: 最大加载条数
     """
-    # 优先 BM25
-    chunks = load_chunks_from_bm25(db_path, max_chunks)
-    if chunks:
-        return chunks
-
-    # Fallback: Vector
-    return load_chunks_from_vector(db_path, collection_name, max_chunks)
+    return load_chunks_from_bm25(db_path, max_chunks)
 
 
 def build_topic_graph(chunks: list[dict]) -> dict[str, list[str]]:
@@ -289,21 +236,101 @@ def generate_insights(chunks: list[dict], cross_refs: list[dict], patterns: dict
     return insights
 
 
-def dream(db_path: Path, collection_name: str = "knowledge_base",
+def _run_housekeeping(
+    db_path: Path,
+    llm_client: Optional[LLMClient] = None,
+    housekeeping: Optional[dict] = None,
+) -> dict:
+    """执行 dreaming 配套的自动整理任务。
+
+    包括：
+      - 清理过期记忆
+      - 压缩旧短期记忆（LLM 判断生命周期）
+      - 聚类合并相似知识库 chunk
+
+    任何子任务失败都只记录 warning，不影响整体 dream 结果。
+    """
+    if housekeeping is False:
+        return {"enabled": False}
+
+    cfg = DEFAULT_HOUSEKEEPING.copy()
+    if isinstance(housekeeping, dict):
+        cfg.update(housekeeping)
+
+    result: dict = {"enabled": True, "memory": {}, "consolidation": {}}
+
+    # 记忆清理与压缩
+    try:
+        from .memory import MemoryStore
+
+        store = MemoryStore(db_path)
+
+        if cfg["cleanup_expired_memories"]:
+            deleted = store.cleanup_expired()
+            result["memory"]["expired_deleted"] = deleted
+
+        if cfg["compress_old_memories"] and llm_client and llm_client.ready:
+            compress_result = store.compress_old(
+                max_age_days=cfg["compress_max_age_days"],
+                keep_recent=cfg["compress_keep_recent"],
+                llm_client=llm_client,
+            )
+            result["memory"]["compress"] = compress_result
+        else:
+            result["memory"]["compress"] = {"skipped": True, "reason": "llm_not_ready"}
+    except Exception as e:
+        logger.warning("记忆整理失败: %s", e)
+        result["memory"]["error"] = str(e)
+
+    # 知识库相似 chunk 合并
+    try:
+        from .consolidator import consolidate
+
+        if cfg["consolidate_chunks"]:
+            consolidation = consolidate(
+                db_path,
+                threshold=cfg["consolidate_threshold"],
+                min_cluster_size=cfg["consolidate_min_cluster_size"],
+                max_chunks=cfg["consolidate_max_chunks"],
+                llm_client=llm_client,
+                apply=cfg.get("consolidate_apply", False),
+            )
+            result["consolidation"] = {
+                "status": consolidation.get("status"),
+                "total_chunks": consolidation.get("total_chunks", 0),
+                "cluster_count": consolidation.get("cluster_count", 0),
+                "applied": consolidation.get("applied", False),
+                "removed": consolidation.get("removed", 0),
+                "inserted": consolidation.get("inserted", 0),
+            }
+            # 仅在 full 模式下保留详细 clusters，避免 brief 占用过多 token
+            result["consolidation"]["clusters"] = consolidation.get("clusters", [])
+        else:
+            result["consolidation"] = {"skipped": True}
+    except Exception as e:
+        logger.warning("知识库合并整理失败: %s", e)
+        result["consolidation"]["error"] = str(e)
+
+    return result
+
+
+def dream(db_path: Path,
           persist: bool = True, compare: bool = True,
           format: str = "full",
-          llm_client: Optional[LLMClient] = None) -> dict:
-    """执行 dreaming — 知识库自主思考。
+          llm_client: Optional[LLMClient] = None,
+          housekeeping: Optional[dict] = None) -> dict:
+    """执行 dreaming — 知识库自主思考 + 自动整理。
 
     Args:
         db_path: 数据存储根路径
-        collection_name: ChromaDB collection 名称（vector 模式 fallback 用）
         persist: 是否持久化结果到 ~/.shibei/dreams/
         compare: 是否与上次 dream 结果对比，输出增量变化
         format: 输出格式 "full" 完整 / "brief" 精简（MCP 默认用 brief）
         llm_client: LLM 客户端，启用时增强洞察生成
+        housekeeping: 控制是否执行记忆清理/压缩/知识库合并；
+                      传 False 禁用，传 dict 覆盖默认配置
     """
-    chunks = load_chunks(db_path, collection_name=collection_name)
+    chunks = load_chunks(db_path)
 
     if not chunks:
         return {"status": "empty", "message": "知识库为空，无法 dream"}
@@ -325,6 +352,13 @@ def dream(db_path: Path, collection_name: str = "knowledge_base",
         except (ConnectionError, TimeoutError, ValueError, RuntimeError) as e:
             logger.warning("LLM 洞察增强失败: %s", e)
 
+    # 自动整理（housekeeping）
+    hk_result = _run_housekeeping(
+        db_path,
+        llm_client=llm_client,
+        housekeeping=housekeeping,
+    )
+
     result = {
         "status": "ok",
         "timestamp": datetime.now().isoformat(timespec="seconds"),
@@ -339,6 +373,7 @@ def dream(db_path: Path, collection_name: str = "knowledge_base",
         "cross_references": cross_refs[:10],
         "patterns": patterns,
         "insights": insights,
+        "housekeeping": hk_result,
     }
 
     # 增量对比：与上次 dream 结果比较
@@ -362,6 +397,18 @@ def dream(db_path: Path, collection_name: str = "knowledge_base",
                 "stats_delta": result["diff"].get("stats_delta", {}),
                 "new_insights": result["diff"].get("new_insights", []),
             }
+        # housekeeping 摘要：保留统计，去掉详细 clusters
+        hk = result.get("housekeeping", {})
+        if hk.get("enabled"):
+            brief_hk = {
+                "enabled": True,
+                "memory": hk.get("memory", {}),
+                "consolidation": {
+                    k: v for k, v in hk.get("consolidation", {}).items()
+                    if k != "clusters"
+                },
+            }
+            brief_result["housekeeping"] = brief_hk
         # 如果 MCP 直接调 brief，不持久化完整数据会丢失历史，所以先 save full 再返回 brief
         if persist:
             save_dream(db_path, result)

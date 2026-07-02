@@ -10,8 +10,7 @@ from shibei.bm25 import BM25Index
 
 def make_config(db_path: str) -> Config:
     cfg = Config()
-    cfg.chroma.path = db_path
-    cfg.chroma.search_engine = "bm25"
+    cfg.storage.path = db_path
     return cfg
 
 

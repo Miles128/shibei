@@ -1,6 +1,6 @@
 """轻量关联发现 — 标签共现、Markdown 链接、关键词共现。
 
-不依赖图数据库，基于已有 BM25 / ChromaDB 索引元数据计算关联。
+不依赖图数据库，基于已有 BM25 索引元数据计算关联。
 """
 
 import re
@@ -54,53 +54,17 @@ class RelatedFinder:
         返回列表按关联强度排序，元素格式：
         {"source": str, "score": float, "reason": str}
         """
-        engine = self.cfg.chroma.search_engine
-        if engine in ("bm25", "hybrid"):
-            return self._find_related_bm25(source, limit)
-        return self._find_related_vector(source, limit)
+        return self._find_related_bm25(source, limit)
 
     def _find_related_bm25(self, source: str, limit: int) -> list[dict]:
         import sqlite3
         from .bm25 import CONTENT_TABLE
 
-        db_path = str(self.cfg.chroma_path_expanded / "fts5.db")
+        db_path = str(self.cfg.db_path_expanded / "fts5.db")
         with sqlite3.connect(db_path, timeout=30.0) as conn:
             rows = conn.execute(
                 f"SELECT source, file_path, tags, content FROM {CONTENT_TABLE}"
             ).fetchall()
-
-        return self._build_relations(source, rows, limit)
-
-    def _find_related_vector(self, source: str, limit: int) -> list[dict]:
-        import chromadb
-        from .embedding import get_embedding_function
-
-        client = chromadb.PersistentClient(path=str(self.cfg.chroma_path_expanded))
-        ef = get_embedding_function(self.cfg.embedding)
-        collection = client.get_collection(
-            self.cfg.chroma.collection, embedding_function=ef
-        )
-
-        rows = []
-        batch_size = 1000
-        offset = 0
-        while True:
-            batch = collection.get(
-                include=["metadatas"], limit=batch_size, offset=offset
-            )
-            metas = batch.get("metadatas", [])
-            if not metas:
-                break
-            for meta in metas:
-                rows.append((
-                    meta.get("source", ""),
-                    meta.get("file", ""),
-                    meta.get("tags", ""),
-                    "",  # vector 侧不读原文，避免拉取过多
-                ))
-            if len(metas) < batch_size:
-                break
-            offset += batch_size
 
         return self._build_relations(source, rows, limit)
 

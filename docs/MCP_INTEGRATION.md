@@ -85,7 +85,7 @@ Agent (Claude/Hermes/Cursor)
   ▼
 shibei.server
   │
-  ├─ shibei_search(query)   → BM25/向量/Hybrid 搜索 → 返回排序结果
+  ├─ shibei_search(query)   → BM25 搜索 → 返回排序结果
   ├─ shibei_import()        → 扫描 MD → 分块 → 增量导入 → 存入
   └─ shibei_list_sources()  → 列出已入库文件
 ```

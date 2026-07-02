@@ -17,16 +17,6 @@ echo ""
 echo "📦 安装依赖..."
 "$PYTHON" -m pip install -e . --quiet
 
-# 下载模型
-echo ""
-echo "🤖 下载嵌入模型..."
-MODEL="moka-ai/m3e-base"
-"$PYTHON" -c "
-from sentence_transformers import SentenceTransformer
-m = SentenceTransformer('$MODEL')
-print(f'✅ 模型就绪: $MODEL ({m.get_sentence_embedding_dimension()}d)')
-"
-
 # 初始化配置
 echo ""
 if [ ! -f config.yaml ]; then

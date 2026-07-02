@@ -9,17 +9,9 @@ import yaml
 
 
 @dataclass
-class ChromaConfig:
+class StorageConfig:
     path: str = "~/.shibei/db"
-    collection: str = "knowledge_base"
-    search_engine: str = "bm25"  # "bm25" | "vector" | "hybrid"
-
-
-@dataclass
-class EmbeddingConfig:
-    model: str = "moka-ai/m3e-base"
-    device: str = "cpu"
-    hf_endpoint: Optional[str] = "https://hf-mirror.com"
+    search_engine: str = "bm25"  # 仅支持 bm25
 
 
 @dataclass
@@ -86,8 +78,7 @@ DEFAULT_IGNORE_DIRS = (
 
 @dataclass
 class Config:
-    chroma: ChromaConfig = field(default_factory=ChromaConfig)
-    embedding: EmbeddingConfig = field(default_factory=EmbeddingConfig)
+    storage: StorageConfig = field(default_factory=StorageConfig)
     sources: list[str] = field(default_factory=lambda: ["~/Documents/notes"])
     extensions: list[str] = field(default_factory=lambda: [".md", ".txt", ".docx", ".xlsx", ".csv"])
     ignore_dirs: list[str] = field(default_factory=lambda: list(DEFAULT_IGNORE_DIRS))
@@ -97,8 +88,8 @@ class Config:
     llm: LLMConfig = field(default_factory=LLMConfig)
 
     @property
-    def chroma_path_expanded(self) -> Path:
-        return Path(self.chroma.path).expanduser()
+    def db_path_expanded(self) -> Path:
+        return Path(self.storage.path).expanduser()
 
     @property
     def sources_expanded(self) -> list[Path]:
@@ -110,10 +101,8 @@ def load_config(path: str = "config.yaml") -> Config:
 
     环境变量：
       SHIBEI_CONFIG       — 配置文件路径（默认 config.yaml）
-      SHIBEI_MODEL        — 覆盖嵌入模型
       SHIBEI_SOURCES      — 覆盖数据源（逗号分隔）
       SHIBEI_LLM_API_KEY  — 覆盖 LLM API Key（避免明文写入配置文件）
-      HF_ENDPOINT         — HuggingFace 镜像
     """
     config_path = os.environ.get("SHIBEI_CONFIG", path)
 
@@ -124,21 +113,8 @@ def load_config(path: str = "config.yaml") -> Config:
 
     cfg = Config()
 
-    # Chroma
-    if "chroma" in raw:
-        cfg.chroma = ChromaConfig(**raw["chroma"])
-
-    # Embedding
-    if "embedding" in raw:
-        cfg.embedding = EmbeddingConfig(**raw["embedding"])
-    if os.environ.get("SHIBEI_MODEL"):
-        cfg.embedding.model = os.environ["SHIBEI_MODEL"]
-
-    # HF endpoint: config > env > default
-    if os.environ.get("HF_ENDPOINT"):
-        cfg.embedding.hf_endpoint = os.environ["HF_ENDPOINT"]
-    if cfg.embedding.hf_endpoint:
-        os.environ.setdefault("HF_ENDPOINT", cfg.embedding.hf_endpoint)
+    if "storage" in raw:
+        cfg.storage = StorageConfig(**raw["storage"])
 
     # Sources
     if "sources" in raw:

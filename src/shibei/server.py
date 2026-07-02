@@ -56,6 +56,16 @@ def _handle_dream(brain, args):
     return brain.dream(
         format=args.get("format", "brief"),
         persist=args.get("persist", True),
+        housekeeping=args.get("housekeeping"),
+    )
+
+
+def _handle_consolidate(brain, args):
+    return brain.consolidate(
+        threshold=args.get("threshold", 0.6),
+        min_cluster_size=args.get("min_cluster_size", 2),
+        max_chunks=args.get("max_chunks", 500),
+        apply=args.get("apply", False),
     )
 
 
@@ -72,7 +82,7 @@ def _handle_remember(brain, args):
 TOOLS = {
     "shibei_search": {
         "handler": _handle_search,
-        "description": "语义搜索个人知识库",
+        "description": "语义搜索个人知识库。当用户提到以下任一情况时，必须优先调用本工具：\n1. 用户做过的事、经历、工作成果、项目背景（如'我之前做过...'、'我负责过...'、'我们项目里...'）\n2. 用户的个人情况、偏好、习惯、目标（如'我喜欢...'、'我计划...'、'我的习惯是...'）\n3. 用户询问自己之前整理/记录/收藏过的内容（如'我笔记里有...'、'我好像写过...'）\n4. 需要调用个人历史信息才能准确回答的问题。搜索 query 应提取用户问题中的核心实体和关键词，必要时去掉人称词。",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -127,7 +137,7 @@ TOOLS = {
     },
     "shibei_dream": {
         "handler": _handle_dream,
-        "description": "知识库 dreaming — 发现隐藏连接、跨文档关联、主题模式和洞察。默认精简输出（stats+insights），需要完整 cross_references 时用 full 格式。",
+        "description": "知识库 dreaming — 发现隐藏连接、跨文档关联、主题模式和洞察，并自动执行整理：清理过期记忆、压缩旧短期记忆、合并相似 chunk。默认精简输出（stats+insights+housekeeping统计），需要完整 cross_references 时用 full 格式。",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -135,19 +145,53 @@ TOOLS = {
                     "type": "string",
                     "enum": ["brief", "full"],
                     "default": "brief",
-                    "description": "brief=精简（推荐 MCP，只返回 stats+insights，省 token）；full=完整（返回 cross_references + patterns）",
+                    "description": "brief=精简（推荐 MCP，只返回 stats+insights+housekeeping统计，省 token）；full=完整（返回 cross_references + patterns + 详细 clusters）",
                 },
                 "persist": {
                     "type": "boolean",
                     "default": True,
                     "description": "是否持久化结果，用于后续 diff 对比",
                 },
+                "housekeeping": {
+                    "type": ["boolean", "object"],
+                    "default": True,
+                    "description": "是否执行自动整理。false=禁用；true=使用默认配置；object=自定义配置（如 {\"compress_max_age_days\": 30, \"consolidate_threshold\": 0.6}）",
+                },
+            },
+        },
+    },
+    "shibei_consolidate": {
+        "handler": _handle_consolidate,
+        "description": "整理知识库：发现内容高度重叠的 chunk，聚类后生成精炼摘要。可选 apply 模式，直接删除原重叠 chunks 并把合并摘要写回知识库。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "threshold": {
+                    "type": "number",
+                    "default": 0.6,
+                    "description": "Overlap 相似度阈值（0~1），越高要求越严格",
+                },
+                "min_cluster_size": {
+                    "type": "integer",
+                    "default": 2,
+                    "description": "最小组大小",
+                },
+                "max_chunks": {
+                    "type": "integer",
+                    "default": 500,
+                    "description": "最大扫描 chunk 数",
+                },
+                "apply": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "是否将合并摘要写回知识库并删除原重叠 chunks（谨慎使用）",
+                },
             },
         },
     },
     "shibei_remember": {
         "handler": _handle_remember,
-        "description": "将对话或交互中的重要事实写入 Shibei 长期记忆。Agent 应在遇到用户偏好、项目背景、关键决策等信息时主动调用。写入的记忆会在后续 shibei_search 中自动召回。",
+        "description": "将对话或交互中的重要事实写入 Shibei 长期记忆。Agent 必须在以下场景主动调用：\n1. 用户提到自己的个人情况、偏好、习惯、目标（如'我喜欢...'、'我习惯...'、'我计划...'）\n2. 用户描述自己做过的项目、工作成果、经历（如'我开发过...'、'我负责过...'、'我们之前...'）\n3. 用户明确的关键决策、重要结论、约定（如'我决定...'、'请记住...'）\n4. 任何你认为后续回答用户问题时可能用得上、且不在知识库中的事实。\n写入的记忆会在后续 shibei_search 中自动召回。",
         "inputSchema": {
             "type": "object",
             "properties": {

@@ -135,36 +135,6 @@ def test_diff_dreams():
     assert "机器学习" in diff["lost_topics"][0]
 
 
-def test_dream_with_persist_and_compare():
-    """dream 集成持久化与对比"""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = Path(tmpdir)
-        # 首次 dream（空库）
-        result1 = dream(db_path, persist=True, compare=True)
-        assert result1["status"] == "empty"
-        # 空库不持久化，所以 latest.json 不存在
-        assert not (db_path / "dreams" / "latest.json").exists()
-
-        # 手动构造上次结果，模拟有数据
-        save_dream(db_path, {
-            "status": "ok",
-            "timestamp": "2026-06-17T10:00:00",
-            "stats": {"total_chunks": 5, "unique_docs": 3,
-                      "cross_references": 1, "topics_with_connections": 2},
-            "cross_references": [
-                {"doc_a": "a.md", "doc_b": "b.md",
-                 "shared_keywords": ["AI"], "strength": 1}
-            ],
-            "patterns": {"ai": ["AI"]},
-            "insights": ["旧洞察"],
-        })
-
-        # 再次 dream（仍空库，但能对比）
-        result2 = dream(db_path, persist=True, compare=True)
-        # 空库返回 empty，不触发对比逻辑
-        assert result2["status"] == "empty"
-
-
 def test_compress_dreams():
     """压缩历史 dream：保留最近 N 次，更早的只存摘要"""
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -238,7 +208,7 @@ def test_dream_brief_format():
 
         from shibei.dreamer import dream
         # full 格式
-        full = dream(db_path, collection_name="test", format="full",
+        full = dream(db_path, format="full",
                      persist=False, compare=False)
         assert full["status"] == "ok"
         assert "cross_references" in full
@@ -246,7 +216,7 @@ def test_dream_brief_format():
         assert "insights" in full
 
         # brief 格式
-        brief = dream(db_path, collection_name="test", format="brief",
+        brief = dream(db_path, format="brief",
                       persist=False, compare=False)
         assert brief["status"] == "ok"
         assert "stats" in brief
@@ -272,7 +242,7 @@ def test_dream_llm_enhancement():
         llm = LLMClient(LLMConfig(enabled=True, provider="openai-compatible", api_key="sk-test"))
         llm.chat = lambda prompt, system_prompt=None: '["跨文档共同指向 AI 主题"]'
 
-        result = dream(db_path, collection_name="test", format="brief",
+        result = dream(db_path, format="brief",
                        persist=False, compare=False, llm_client=llm)
         assert result["status"] == "ok"
         assert any("[LLM]" in ins for ins in result["insights"])
@@ -297,8 +267,57 @@ def test_dream_llm_failure_graceful_degrade():
             RuntimeError("mock failure")
         )
 
-        result = dream(db_path, collection_name="test", format="brief",
+        result = dream(db_path, format="brief",
                        persist=False, compare=False, llm_client=llm)
         assert result["status"] == "ok"
         assert len(result["insights"]) > 0
         assert not any("[LLM]" in ins for ins in result["insights"])
+
+
+def test_dream_housekeeping_default_runs():
+    """默认 dream 会执行 housekeeping"""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db_path = Path(tmpdir)
+        from shibei.bm25 import BM25Index
+        bm25 = BM25Index(str(db_path / "fts5.db"))
+        bm25.add_batch([
+            ("/a.md", "/a.md", "ai", "人工智能正在改变世界。", "", ""),
+            ("/b.md", "/b.md", "ai", "大模型技术突破。", "", ""),
+        ])
+
+        result = dream(db_path, format="full",
+                       persist=False, compare=False)
+        assert result["status"] == "ok"
+        assert "housekeeping" in result
+        assert result["housekeeping"]["enabled"] is True
+        assert "memory" in result["housekeeping"]
+        assert "consolidation" in result["housekeeping"]
+
+
+def test_dream_housekeeping_apply_consolidation():
+    """dream housekeeping 中 consolidate_apply=True 会写回数据库"""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db_path = Path(tmpdir)
+        from shibei.bm25 import BM25Index
+        bm25 = BM25Index(str(db_path / "fts5.db"))
+        bm25.add_batch([
+            ("/a.md", "/a.md", "ai", "Redis 持久化包括 RDB 和 AOF 两种方式", "", ""),
+            ("/b.md", "/b.md", "ai", "Redis 使用 RDB 和 AOF 做持久化存储", "", ""),
+        ])
+
+        from shibei.llm import LLMConfig, LLMClient
+        llm = LLMClient(LLMConfig(enabled=True, provider="openai-compatible", api_key="sk-test"))
+        llm.summarize = lambda text, max_length=100: "Redis 使用 RDB 和 AOF 持久化。"
+
+        result = dream(db_path, format="full",
+                       persist=False, compare=False,
+                       llm_client=llm,
+                       housekeeping={"consolidate_apply": True,
+                                     "consolidate_threshold": 0.3})
+        assert result["status"] == "ok"
+        cons = result["housekeeping"]["consolidation"]
+        assert cons.get("applied") is True
+        assert cons.get("removed", 0) >= 2
+        assert cons.get("inserted", 0) >= 1
+
+

@@ -47,9 +47,7 @@ def create_profile(name: str, template: 'str | None' = None) -> Path:
         else:
             target.write_text(
                 "# Shibei profile: {}\n".format(name)
-                + "chroma:\n  path: ~/.shibei/db\n"
-                + "  collection: {}\n".format(name)
-                + "embedding:\n  model: moka-ai/m3e-base\n  device: cpu\n"
+                + "storage:\n  path: ~/.shibei/db\n"
                 + "sources:\n  - ~/Documents/notes\n"
                 + "tagging:\n  rules:\n    - pattern: \".*\"\n      tag: misc\n"
             )

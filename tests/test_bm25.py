@@ -106,6 +106,33 @@ def test_bm25_clear():
         assert len(results) == 0
 
 
+def test_bm25_delete_by_rowids():
+    """按 rowid 精确删除 chunk"""
+    import sqlite3
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db_path = str(Path(tmpdir) / "test.db")
+        bm25 = BM25Index(db_path)
+
+        items = [
+            ("src/a.md", "a.md", "ai", "人工智能内容"),
+            ("src/b.md", "b.md", "finance", "金融内容"),
+        ]
+        bm25.add_batch(items)
+
+        # 获取 rowid
+        with sqlite3.connect(db_path) as conn:
+            rows = conn.execute("SELECT rowid, source FROM chunks ORDER BY rowid").fetchall()
+        rowid_a = next(r[0] for r in rows if r[1] == "src/a.md")
+
+        bm25.delete_by_rowids([rowid_a])
+
+        assert bm25.count() == 1
+        results = bm25.search("人工智能", limit=5)
+        assert len(results) == 0
+        results = bm25.search("金融", limit=5)
+        assert len(results) == 1
+
+
 def test_bm25_summary_recall():
     """摘要索引召回：正文不含查询词，但摘要含查询词时应命中。"""
     with tempfile.TemporaryDirectory() as tmpdir:

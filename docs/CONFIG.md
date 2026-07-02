@@ -2,36 +2,16 @@
 
 `config.yaml` 完整配置项说明。
 
-## chroma
+## storage
 
-ChromaDB 存储配置。
-
-```yaml
-chroma:
-  path: ~/.shibei/db              # 向量数据库路径（自动创建）
-  collection: knowledge_base      # collection 名称
-  search_engine: hybrid           # bm25 | vector | hybrid
-```
-
-`search_engine` 控制搜索模式：
-- `bm25` — 纯关键词搜索，零依赖，最快
-- `vector` — 纯语义搜索，需 embedding 模型
-- `hybrid` — RRF 融合 BM25 + 向量，效果最好
-
-## embedding
-
-嵌入模型配置。
+数据存储配置。
 
 ```yaml
-embedding:
-  model: moka-ai/m3e-base        # 模型名称（sentence-transformers 格式）
-  device: cpu                     # cpu | mps (Mac) | cuda
-  hf_endpoint: https://hf-mirror.com  # HF 镜像，海外删掉
+storage:
+  path: ~/.shibei/db              # SQLite 数据路径（自动创建）
 ```
 
-环境变量覆盖：
-- `SHIBEI_MODEL` — 覆盖 model
-- `HF_ENDPOINT` — 覆盖 hf_endpoint
+Shibei 使用 SQLite + FTS5 实现 BM25 全文搜索，无需外部数据库或向量服务。
 
 ## sources
 
@@ -53,6 +33,9 @@ sources:
 chunking:
   max_chars: 800                 # 每块最大字符数
   split_pattern: "\n(?=## )"     # 分割正则（按 ## 标题切分）
+  overlap: 0                     # 相邻 chunk 重叠字符数
+  parent_window: 0               # parent-child 模式（0=禁用）
+  sentence_boundaries: "。！？!?\n"  # 句子边界字符
 ```
 
 ## tagging
@@ -72,6 +55,35 @@ tagging:
 
 `pattern` 是 Python 正则（大小写不敏感）。
 
+## summarize
+
+导入时为每个 chunk 生成一句话摘要，增强召回。
+
+```yaml
+summarize:
+  enabled: true                  # 默认开启
+  max_length: 100                # 摘要最大字符数
+  model: ""                      # 为空则使用 llm.model
+```
+
+## llm
+
+LLM 增强（可选，默认关闭）。开启后支持查询改写、事实提取、 dreaming 洞察增强、记忆生命周期判断、相似 chunk 合并摘要。
+
+```yaml
+llm:
+  enabled: false
+  provider: openai-compatible
+  model: deepseek-chat
+  base_url: https://api.deepseek.com/v1
+  api_key: ""                    # 必填
+  temperature: 0.3
+  max_tokens: 1024
+  timeout: 30.0
+```
+
+环境变量覆盖：`SHIBEI_LLM_API_KEY`
+
 ## CLI 参数
 
 ```bash
@@ -85,7 +97,6 @@ shibei search "关键词" --limit 10 --tag ai
 | 变量 | 覆盖项 |
 |------|--------|
 | `SHIBEI_CONFIG` | 配置文件路径 |
-| `SHIBEI_MODEL` | embedding.model |
 | `SHIBEI_SOURCES` | sources（逗号分隔） |
-| `HF_ENDPOINT` | embedding.hf_endpoint |
+| `SHIBEI_LLM_API_KEY` | llm.api_key |
 | `SHIBEI_MCP_DEBUG` | MCP server 调试模式 |

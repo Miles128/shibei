@@ -189,6 +189,28 @@ class LLMClient:
 {text}"""
         return self.chat(prompt)
 
+    def classify_memory_lifespan(self, fact: str) -> str:
+        """判断一段记忆是短期、长期还是个人信息。
+
+        返回："short_term" | "long_term" | "personal"
+        """
+        prompt = f"""请判断以下这条记忆属于哪一类，只输出单个标签：
+
+- short_term：短期信息、临时计划、一次性事件、很快会过时的上下文
+- long_term：长期知识、项目背景、重要决策、持续有效的约定
+- personal：用户个人隐私、身份、偏好、习惯、目标等核心个人信息
+
+记忆：{fact}
+
+请只输出 short_term / long_term / personal 三者之一，不要解释。"""
+
+        raw = self.chat(prompt).strip().lower()
+        for label in ("short_term", "long_term", "personal"):
+            if label in raw:
+                return label
+        # 默认保守处理为长期，避免误删个人信息
+        return "long_term"
+
     @staticmethod
     def _extract_json_list(text: str) -> list[str]:
         """从 LLM 输出中提取 JSON 字符串数组，失败则按行分割。"""

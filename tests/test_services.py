@@ -3,7 +3,7 @@
 import tempfile
 from pathlib import Path
 
-from shibei.config import Config, ChromaConfig, EmbeddingConfig
+from shibei.config import Config, StorageConfig
 from shibei.services import Shibei
 from shibei.llm import LLMConfig, LLMClient
 
@@ -13,8 +13,7 @@ def test_remember_extracts_facts_with_llm():
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = Path(tmpdir)
         cfg = Config(
-            chroma=ChromaConfig(path=str(db_path), search_engine="bm25"),
-            embedding=EmbeddingConfig(model=""),
+            storage=StorageConfig(path=str(db_path)),
         )
 
         brain = Shibei.__new__(Shibei)
@@ -33,8 +32,7 @@ def test_remember_degrades_when_llm_fails():
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = Path(tmpdir)
         cfg = Config(
-            chroma=ChromaConfig(path=str(db_path), search_engine="bm25"),
-            embedding=EmbeddingConfig(model=""),
+            storage=StorageConfig(path=str(db_path)),
         )
 
         brain = Shibei.__new__(Shibei)

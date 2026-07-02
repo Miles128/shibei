@@ -44,24 +44,21 @@ class Shibei:
         from .importer import list_sources
         return list_sources(self.config, limit=limit, offset=offset)
 
-    def dream(self, format: str = "full", persist: bool = True) -> dict:
+    def dream(self, format: str = "full", persist: bool = True, housekeeping: 'dict | None' = None) -> dict:
         from .dreamer import dream
         return dream(
-            self.config.chroma_path_expanded,
-            collection_name=self.config.chroma.collection,
+            self.config.db_path_expanded,
             format=format,
             persist=persist,
             llm_client=self.llm,
+            housekeeping=housekeeping,
         )
 
     # ---------- 对话记忆 ----------
 
     def _memory_store(self):
         from .memory import MemoryStore
-        return MemoryStore(
-            self.config.chroma_path_expanded,
-            embedding_model=self.config.embedding.model,
-        )
+        return MemoryStore(self.config.db_path_expanded)
 
     def remember(
         self,
@@ -92,7 +89,6 @@ class Shibei:
                 source=source,
                 tags=tags,
                 expires_at=expires_at,
-                embedding_model=self.config.embedding.model,
             )
 
         # 记录本次提取数量，方便调用方感知
@@ -117,3 +113,37 @@ class Shibei:
     def count_memories(self, category: 'str | None' = None) -> int:
         """统计有效记忆数量。"""
         return self._memory_store().count(category=category)
+
+    def cleanup_memories(self) -> int:
+        """清理已过期的对话记忆，返回删除条数。"""
+        return self._memory_store().cleanup_expired()
+
+    def compress_memories(
+        self,
+        max_age_days: int = 30,
+        keep_recent: int = 10,
+    ) -> dict:
+        """压缩旧记忆：只压缩 short_term，跳过 long_term 和 personal。"""
+        return self._memory_store().compress_old(
+            max_age_days=max_age_days,
+            keep_recent=keep_recent,
+            llm_client=self.llm,
+        )
+
+    def consolidate(
+        self,
+        threshold: float = 0.6,
+        min_cluster_size: int = 2,
+        max_chunks: int = 500,
+        apply: bool = False,
+    ) -> dict:
+        """整理知识库：发现相似 chunk 并生成合并摘要；apply=True 时写回数据库。"""
+        from .consolidator import consolidate
+        return consolidate(
+            self.config.db_path_expanded,
+            threshold=threshold,
+            min_cluster_size=min_cluster_size,
+            max_chunks=max_chunks,
+            llm_client=self.llm,
+            apply=apply,
+        )

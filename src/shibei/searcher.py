@@ -1,7 +1,6 @@
-"""语义搜索引擎 — 支持向量 + BM25 双引擎
+"""语义搜索引擎 — 仅 BM25 引擎
 
-使用策略模式：SearchEngine 抽象基类定义接口，
-BM25Engine / VectorEngine / HybridEngine 分别实现。
+策略模式保留，但当前只实现 BM25Engine，未来如需扩展可继续注册。
 """
 
 import logging
@@ -25,111 +24,19 @@ class SearchEngine(ABC):
 
 
 class BM25Engine(SearchEngine):
-    """BM25 搜索引擎（SQLite FTS5）。"""
+    """BM25 搜索引擎（SQLite FTS5）"""
 
     def __init__(self, cfg: Config):
         self.cfg = cfg
 
     def search(self, query: str, limit: int, tag: 'str | None' = None) -> dict:
-        bm25 = BM25Index(str(self.cfg.chroma_path_expanded / "fts5.db"))
+        bm25 = BM25Index(str(self.cfg.db_path_expanded / "fts5.db"))
         results = bm25.search(query, limit, tag)
-        return {"query": query, "total": len(results), "results": results}
-
-
-class VectorEngine(SearchEngine):
-    """向量搜索引擎（ChromaDB）。"""
-
-    def __init__(self, cfg: Config):
-        self.cfg = cfg
-
-    def search(self, query: str, limit: int, tag: 'str | None' = None) -> dict:
-        import chromadb
-        from .embedding import get_embedding_function
-
-        client = chromadb.PersistentClient(
-            path=str(self.cfg.chroma_path_expanded)
-        )
-        ef = get_embedding_function(self.cfg.embedding)
-        collection = client.get_collection(
-            self.cfg.chroma.collection, embedding_function=ef
-        )
-
-        where = {"tags": {"$contains": tag}} if tag else None
-        results = collection.query(
-            query_texts=[query], n_results=limit, where=where,
-            include=["documents", "metadatas", "distances"]
-        )
-
-        items = []
-        ids0 = results["ids"][0]
-        docs0 = results["documents"][0]
-        metas0 = results["metadatas"][0]
-        dists0 = results.get("distances", [[0] * limit])[0]
-
-        for i in range(len(ids0)):
-            meta = metas0[i]
-            dist = dists0[i]
-            item = {
-                "rank": i + 1,
-                "source": meta.get("source", ""),
-                "score": round(1 - dist, 3),
-                "tags": meta.get("tags", ""),
-                "text": docs0[i][:300],
-            }
-            if meta.get("parent_id"):
-                item["parent_text"] = meta.get("parent_text", "")[:800]
-                item["parent_id"] = meta["parent_id"]
-            items.append(item)
-
-        return {"query": query, "total": len(items), "results": items}
-
-
-class HybridEngine(SearchEngine):
-    """混合搜索：BM25 + 向量，RRF (Reciprocal Rank Fusion) 融合排序。"""
-
-    def __init__(self, cfg: Config):
-        self.cfg = cfg
-        self._bm25 = BM25Engine(cfg)
-        self._vector = VectorEngine(cfg)
-
-    def search(self, query: str, limit: int, tag: 'str | None' = None) -> dict:
-        k = 60
-
-        bm25_results = self._bm25.search(query, limit * 3, tag)["results"]
-        vector_results = self._vector.search(query, limit * 3, tag)["results"]
-
-        rrf_scores: dict[str, float] = {}
-        best_result: dict[str, dict] = {}
-
-        for rank, r in enumerate(bm25_results, start=1):
-            key = r["source"]
-            rrf_scores[key] = rrf_scores.get(key, 0) + 1.0 / (k + rank)
-            if key not in best_result or r["score"] > best_result[key]["score"]:
-                best_result[key] = r
-
-        for rank, r in enumerate(vector_results, start=1):
-            key = r["source"]
-            rrf_scores[key] = rrf_scores.get(key, 0) + 1.0 / (k + rank)
-            if key not in best_result or r["score"] > best_result[key]["score"]:
-                best_result[key] = r
-
-        results = sorted(
-            best_result.values(),
-            key=lambda x: rrf_scores[x["source"]],
-            reverse=True,
-        )[:limit]
-
-        for i, r in enumerate(results):
-            r["rank"] = i + 1
-            r["rrf_score"] = round(rrf_scores[r["source"]], 6)
-
         return {"query": query, "total": len(results), "results": results}
 
 
 _ENGINES: dict[str, type[SearchEngine]] = {
     "bm25": BM25Engine,
-    "vector": VectorEngine,
-    "hybrid": HybridEngine,
 }
 
 
@@ -140,7 +47,7 @@ def register_engine(name: str, engine_cls: type[SearchEngine]) -> None:
 
 
 class Searcher:
-    """根据 config.chroma.search_engine 自动分发到对应策略。"""
+    """BM25 搜索入口，支持 LLM 查询改写和记忆召回。"""
 
     def __init__(self, cfg: Config, llm_client: Optional[LLMClient] = None):
         self.cfg = cfg
@@ -165,10 +72,11 @@ class Searcher:
             except (ConnectionError, TimeoutError, ValueError, RuntimeError) as e:
                 logger.warning("LLM 查询改写失败，回退到原查询: %s", e)
 
-        engine_name = self.cfg.chroma.search_engine
+        engine_name = self.cfg.storage.search_engine
         engine_cls = _ENGINES.get(engine_name)
         if engine_cls is None:
-            raise ValueError(f"Unknown search_engine: {engine_name}")
+            logger.warning("Unknown search_engine '%s', fallback to bm25", engine_name)
+            engine_cls = BM25Engine
 
         engine = engine_cls(self.cfg)
         result = engine.search(search_query, limit, tag)
@@ -185,17 +93,14 @@ class Searcher:
     def _search_memories(self, query, limit):
         from .memory import MemoryStore
 
-        store = MemoryStore(
-            self.cfg.chroma_path_expanded,
-            embedding_model=self.cfg.embedding.model,
-        )
+        store = MemoryStore(self.cfg.db_path_expanded)
         rows = store.search(query, limit=limit)
         return [
             {
                 "type": "memory",
                 "id": r["id"],
                 "source": "memory",
-                "score": round(r.get("score", 0.0), 3),
+                "score": round(float(r.get("score", 0.0)), 3),
                 "text": r["fact"],
                 "tags": r.get("tags", ""),
                 "category": r.get("category", ""),

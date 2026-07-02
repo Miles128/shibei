@@ -21,12 +21,6 @@ def __getattr__(name):
     if name == "Searcher":
         from .searcher import Searcher
         return Searcher
-    if name == "get_embedding_function":
-        from .embedding import get_embedding_function
-        return get_embedding_function
-    if name == "reset_embedding_function":
-        from .embedding import reset_embedding_function
-        return reset_embedding_function
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 __version__ = "0.1.0"
@@ -37,7 +31,6 @@ __all__ = [
     "Importer",
     "BM25Index",
     "load_config",
-    "get_embedding_function",
     "list_profiles",
     "create_profile",
     "delete_profile",

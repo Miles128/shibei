@@ -1,16 +1,8 @@
 # Shibei 配置
 
-# === ChromaDB / BM25 ===
-chroma:
+# === 数据存储 ===
+storage:
   path: ~/.shibei/db          # 数据存储路径
-  collection: knowledge_base        # collection 名称
-  search_engine: bm25               # bm25（零依赖）| vector（需模型）| hybrid
-
-# === 嵌入模型 ===
-embedding:
-  model: moka-ai/m3e-base           # 中文 768d，可换 bge-large-zh-v1.5 等
-  device: cpu                        # cpu | mps (Mac) | cuda
-  hf_endpoint: https://hf-mirror.com  # 国内用镜像，海外删掉这行
 
 # === 数据源 ===
 sources:

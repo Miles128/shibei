@@ -3,14 +3,14 @@
 import tempfile
 from pathlib import Path
 
-from shibei.config import Config, ChromaConfig
+from shibei.config import Config, StorageConfig
 from shibei.bm25 import BM25Index
 from shibei.importer import list_sources
 
 
 def _cfg(db_path: Path) -> Config:
     return Config(
-        chroma=ChromaConfig(path=str(db_path), collection="test_kb", search_engine="bm25"),
+        storage=StorageConfig(path=str(db_path)),
         sources=[],
     )
 
