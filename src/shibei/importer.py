@@ -171,7 +171,7 @@ class Importer:
 
         # 删除已移除/变更文件的旧 chunk
         for fp in to_remove:
-            bm25.remove_by_source(fp)
+            bm25.remove_sources(fp)
         # 变更文件会在 remove_by_source 中删除旧 chunk，然后下面 add_batch 写入新 chunk
 
         if chunks_data:

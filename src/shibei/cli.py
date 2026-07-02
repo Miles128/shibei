@@ -53,6 +53,20 @@ def cmd_remember(args):
         print(f"   ↳ 替代了旧记忆 {result['supersedes'][:8]}")
 
 
+def cmd_update_memory(args):
+    """更新/压缩一条已有记忆（MCP: shibei_update_memory）"""
+    brain = Shibei(args.resolved_config)
+    ok = brain.update_memory(
+        memory_id=args.memory_id,
+        fact=args.fact,
+        tags=args.tags,
+    )
+    if ok:
+        print(f"✅ 已更新记忆 {args.memory_id}")
+    else:
+        print(f"❌ 未找到记忆 {args.memory_id}")
+
+
 def cmd_memories_list(args):
     """列出记忆"""
     brain = Shibei(args.resolved_config)
@@ -305,6 +319,30 @@ def cmd_consolidate(args):
         print(f"💾 结果已保存到 {args.output}")
 
 
+def cmd_apply_consolidation(args):
+    """根据外部摘要直接合并相似 chunk（MCP: shibei_apply_consolidation）"""
+    import json
+
+    brain = Shibei(args.resolved_config)
+    payload = json.loads(Path(args.input).read_text(encoding="utf-8"))
+    # 支持完整的 consolidate 输出 JSON，也支持裸 clusters 列表
+    clusters = payload.get("clusters", payload) if isinstance(payload, dict) else payload
+    if not isinstance(clusters, list):
+        print("❌ 输入文件格式错误：clusters 应为列表")
+        sys.exit(1)
+
+    result = brain.apply_consolidation(clusters=clusters)
+    if result["applied"]:
+        print(f"✅ 已应用合并")
+        print(f"   删除 {result['removed']} 个 chunk，插入 {result['inserted']} 个摘要")
+    else:
+        print(f"❌ 未应用合并")
+    if result.get("invalid_clusters"):
+        print(f"   无效 cluster: {result['invalid_clusters']} 个")
+    if result.get("error"):
+        print(f"   错误: {result['error']}")
+
+
 def cmd_profile_list(args):
     profiles = list_profiles()
     if profiles:
@@ -453,6 +491,12 @@ def main():
     p_remember.add_argument("--tags", default="", help="逗号分隔标签")
     p_remember.add_argument("--expires-at", default=None, help="过期时间 ISO 8601")
 
+    # update-memory
+    p_update = sub.add_parser("update-memory", help="更新/压缩一条已有记忆（MCP: shibei_update_memory）")
+    p_update.add_argument("memory_id", help="记忆 ID（可只给前 8 位）")
+    p_update.add_argument("--fact", required=True, help="新的记忆内容")
+    p_update.add_argument("--tags", default=None, help="逗号分隔的新标签")
+
     # memories（子命令组）
     p_memories = sub.add_parser("memories", help="管理对话记忆")
     p_memories_sub = p_memories.add_subparsers(dest="memories_cmd")
@@ -485,6 +529,11 @@ def main():
                                help="最大扫描 chunk 数（默认 500）")
     p_consolidate.add_argument("--output", default=None,
                                help="输出合并报告到 JSON 文件")
+
+    # apply-consolidation
+    p_apply = sub.add_parser("apply-consolidation",
+                             help="根据外部摘要直接合并相似 chunk（MCP: shibei_apply_consolidation）")
+    p_apply.add_argument("input", help="包含 clusters 的 JSON 文件路径")
 
     # dream（子命令组）
     p_dream = sub.add_parser("dream", help="知识库 dreaming — 发现隐藏连接与洞察")
@@ -579,7 +628,9 @@ def main():
         "import": cmd_import,
         "list": cmd_list,
         "remember": cmd_remember,
+        "update-memory": cmd_update_memory,
         "consolidate": cmd_consolidate,
+        "apply-consolidation": cmd_apply_consolidation,
     }[args.cmd](args)
 
 
