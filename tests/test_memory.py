@@ -185,3 +185,44 @@ def test_compress_old_keeps_recent(store):
     assert store.count() == 5
 
 
+def test_find_compressible_candidates(store):
+    """find_compressible 只返回旧记忆候选，不调用 LLM。"""
+    old = (datetime.now(timezone.utc) - timedelta(days=60)).isoformat(timespec="seconds")
+    recent = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat(timespec="seconds")
+
+    store.add("旧记忆 A", category="user", created_at=old, supersede_threshold=0.95)
+    store.add("旧记忆 B", category="user", created_at=old, supersede_threshold=0.95)
+    store.add("新记忆 C", category="user", created_at=recent, supersede_threshold=0.95)
+
+    candidates = store.find_compressible(max_age_days=30, keep_recent=0)
+    assert len(candidates) == 2
+    facts = {c["fact"] for c in candidates}
+    assert "旧记忆 A" in facts
+    assert "旧记忆 B" in facts
+
+
+def test_find_compressible_keeps_recent(store):
+    """find_compressible 会保留最近 keep_recent 条。"""
+    old = (datetime.now(timezone.utc) - timedelta(days=60)).isoformat(timespec="seconds")
+    for i in range(5):
+        store.add(f"旧记忆 {i} 的内容 {i}", category="user", created_at=old, supersede_threshold=0.95)
+
+    candidates = store.find_compressible(max_age_days=30, keep_recent=2)
+    assert len(candidates) == 3
+
+
+def test_update_memory(store):
+    """update 可修改记忆内容并同步 FTS。"""
+    r = store.add("原始内容", category="user", tags="old")
+    assert store.update(r["id"], "压缩后内容", tags="old,compressed") is True
+
+    updated = store.get(r["id"])
+    assert updated["fact"] == "压缩后内容"
+    assert updated["tags"] == "old,compressed"
+
+    # FTS 索引已更新
+    results = store.search("压缩后")
+    assert len(results) == 1
+    assert results[0]["id"] == r["id"]
+
+

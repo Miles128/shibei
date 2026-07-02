@@ -44,13 +44,22 @@ class Shibei:
         from .importer import list_sources
         return list_sources(self.config, limit=limit, offset=offset)
 
-    def dream(self, format: str = "full", persist: bool = True, housekeeping: 'dict | None' = None) -> dict:
+    def dream(
+        self,
+        format: str = "full",
+        persist: bool = True,
+        housekeeping: 'dict | None' = None,
+        llm_client=None,
+    ) -> dict:
         from .dreamer import dream
+        # 默认使用 Shibei 自身配置的 LLM；MCP 透传 llm_config 时可覆盖
+        if llm_client is None:
+            llm_client = self.llm
         return dream(
             self.config.db_path_expanded,
             format=format,
             persist=persist,
-            llm_client=self.llm,
+            llm_client=llm_client,
             housekeeping=housekeeping,
         )
 
@@ -130,6 +139,15 @@ class Shibei:
             llm_client=self.llm,
         )
 
+    def update_memory(
+        self,
+        memory_id: str,
+        fact: str,
+        tags: 'str | None' = None,
+    ) -> bool:
+        """更新一条记忆内容（用于外部 Agent 执行压缩/修正）。"""
+        return self._memory_store().update(memory_id, fact, tags=tags)
+
     def consolidate(
         self,
         threshold: float = 0.6,
@@ -147,3 +165,8 @@ class Shibei:
             llm_client=self.llm,
             apply=apply,
         )
+
+    def apply_consolidation(self, clusters: list[dict]) -> dict:
+        """根据外部 Agent 提供的 cluster 摘要直接应用合并（零 LLM 依赖）。"""
+        from .consolidator import apply_consolidation
+        return apply_consolidation(self.config.db_path_expanded, clusters)

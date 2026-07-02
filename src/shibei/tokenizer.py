@@ -13,6 +13,16 @@ _CHINESE_RE = re.compile(r"[\u4e00-\u9fff\u3400-\u4dbf]+")
 _ALNUM_RE = re.compile(r"[A-Za-z0-9_]+")
 _CN_CHAR_RE = re.compile(r"[\u4e00-\u9fff\u3400-\u4dbf]")
 
+# Markdown / 格式噪音：#、##、###、---、***、> 等
+_NOISE_RE = re.compile(r"^[#\-*=|>_+\s\d]+$")
+
+
+def is_noise_token(token: str) -> bool:
+    """判断 token 是否为 Markdown 格式符号、纯数字、纯空白等无意义词。"""
+    if not token or token.isspace():
+        return True
+    return bool(_NOISE_RE.fullmatch(token))
+
 _jieba_ok: 'bool | None' = None
 
 
@@ -45,9 +55,15 @@ def tokenize_text(text: str) -> str:
             if not chunk:
                 continue
             if _CHINESE_RE.fullmatch(chunk):
-                tokens.extend(t.strip() for t in jieba.cut(chunk) if t.strip())
+                tokens.extend(
+                    t.strip()
+                    for t in jieba.cut(chunk)
+                    if t.strip() and not is_noise_token(t.strip())
+                )
             else:
-                tokens.extend(_ALNUM_RE.findall(chunk))
+                tokens.extend(
+                    w for w in _ALNUM_RE.findall(chunk) if not is_noise_token(w)
+                )
         return " ".join(tokens)
 
     # 降级：bigram + 单字 + 英文完整 token
@@ -71,12 +87,18 @@ def tokenize_query(text: str) -> str:
                 continue
             if _CHINESE_RE.fullmatch(chunk):
                 tokens.append(f'"{chunk}"')
-                sub = [t.strip() for t in jieba.cut(chunk) if t.strip()]
+                sub = [
+                    t.strip()
+                    for t in jieba.cut(chunk)
+                    if t.strip() and not is_noise_token(t.strip())
+                ]
                 tokens.extend(f'"{t}"' for t in sub)
                 for i in range(len(chunk) - 1):
                     tokens.append(f'"{chunk[i:i+2]}"')
             else:
-                tokens.extend(_ALNUM_RE.findall(chunk))
+                tokens.extend(
+                    w for w in _ALNUM_RE.findall(chunk) if not is_noise_token(w)
+                )
         return " OR ".join(tokens) if tokens else text
 
     # 降级：连续中文保持短语+bigram

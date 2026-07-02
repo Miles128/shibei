@@ -20,22 +20,26 @@ from pathlib import Path
 from collections import Counter, defaultdict
 from typing import Optional
 
+from .tokenizer import is_noise_token
 from .llm import LLMClient
 
 logger = logging.getLogger(__name__)
 
 
-# 整理（housekeeping）默认配置
+# 整理（housekeeping）默认配置。
+# dreaming 默认会尝试自动压缩记忆、合并相似 chunk；若未提供 LLM 客户端，
+# 则退化为发现模式，只返回候选供外部 Agent 判断。
 DEFAULT_HOUSEKEEPING = {
     "cleanup_expired_memories": True,
-    "compress_old_memories": True,
-    "consolidate_chunks": True,
+    "auto_compress": True,          # 是否自动压缩旧短期记忆
+    "auto_consolidate": True,       # 是否自动合并相似 chunk
+    "identify_compressible_memories": True,  # 无 LLM 时返回候选
+    "identify_similar_chunks": True,         # 无 LLM 时返回候选
     "compress_max_age_days": 30,
     "compress_keep_recent": 10,
     "consolidate_threshold": 0.6,
     "consolidate_min_cluster_size": 2,
     "consolidate_max_chunks": 500,
-    "consolidate_apply": False,
 }
 
 
@@ -52,7 +56,7 @@ STOP_WORDS = set("的了是在我有和人这中大为上个国不一到说时�
 
 
 def extract_keywords(text: str, top_n: int = 8) -> list[str]:
-    """从文本中提取关键词（中文优先，过滤噪音）。
+    """从文本中提取关键词（中文优先，过滤 Markdown 格式噪音）。
 
     优先使用 jieba（若安装），降级到正则 bigram。
     """
@@ -60,8 +64,9 @@ def extract_keywords(text: str, top_n: int = 8) -> list[str]:
     try:
         import jieba.analyse
         kws = jieba.analyse.extract_tags(text, topK=top_n)
+        kws = [w for w in kws if not is_noise_token(w)]
         if kws:
-            return kws
+            return kws[:top_n]
     except ImportError:
         pass
 
@@ -70,12 +75,12 @@ def extract_keywords(text: str, top_n: int = 8) -> list[str]:
     cn_words = re.findall(r'[\u4e00-\u9fff]{2,6}', text)
     # 提取英文词（3+ 字母，过滤常见技术噪音词）
     en_words = [w for w in re.findall(r'[A-Za-z]{3,}', text)
-                if w.lower() not in STOP_WORDS and not w.isupper()]
+                if w.lower() not in STOP_WORDS and not w.isupper() and not is_noise_token(w)]
 
     # 中文词加权（×2），英文词权重=1
     words = []
     for w in cn_words:
-        if w not in STOP_WORDS and len(w) >= 2:
+        if w not in STOP_WORDS and len(w) >= 2 and not is_noise_token(w):
             words.append(w)
             words.append(w)  # 中文词权重 ×2
     for w in en_words:
@@ -241,12 +246,12 @@ def _run_housekeeping(
     llm_client: Optional[LLMClient] = None,
     housekeeping: Optional[dict] = None,
 ) -> dict:
-    """执行 dreaming 配套的自动整理任务。
+    """执行 dreaming 配套的整理任务。
 
-    包括：
-      - 清理过期记忆
-      - 压缩旧短期记忆（LLM 判断生命周期）
-      - 聚类合并相似知识库 chunk
+    dreaming 默认自动执行整理：
+      - 清理过期记忆（无需 LLM）
+      - 自动压缩旧短期记忆（需 LLM；未提供时返回候选）
+      - 自动合并相似 chunk（需 LLM；未提供时返回候选）
 
     任何子任务失败都只记录 warning，不影响整体 dream 结果。
     """
@@ -258,8 +263,9 @@ def _run_housekeeping(
         cfg.update(housekeeping)
 
     result: dict = {"enabled": True, "memory": {}, "consolidation": {}}
+    llm_ready = llm_client is not None and getattr(llm_client, "ready", False)
 
-    # 记忆清理与压缩
+    # 记忆：清理过期 + 压缩/识别可压缩候选
     try:
         from .memory import MemoryStore
 
@@ -269,31 +275,44 @@ def _run_housekeeping(
             deleted = store.cleanup_expired()
             result["memory"]["expired_deleted"] = deleted
 
-        if cfg["compress_old_memories"] and llm_client and llm_client.ready:
+        if cfg["auto_compress"] and llm_ready:
             compress_result = store.compress_old(
                 max_age_days=cfg["compress_max_age_days"],
                 keep_recent=cfg["compress_keep_recent"],
                 llm_client=llm_client,
             )
             result["memory"]["compress"] = compress_result
+        elif cfg["identify_compressible_memories"]:
+            candidates = store.find_compressible(
+                max_age_days=cfg["compress_max_age_days"],
+                keep_recent=cfg["compress_keep_recent"],
+            )
+            result["memory"]["compressible_candidates"] = candidates
+            result["memory"]["compressible_count"] = len(candidates)
+            if not llm_ready:
+                result["memory"]["compress"] = {
+                    "skipped": True,
+                    "reason": "llm_not_ready",
+                    "note": "提供 llm_config 后可自动压缩，否则请基于 candidates 手动调用 shibei_update_memory",
+                }
         else:
-            result["memory"]["compress"] = {"skipped": True, "reason": "llm_not_ready"}
+            result["memory"]["compressible"] = {"skipped": True}
     except Exception as e:
         logger.warning("记忆整理失败: %s", e)
         result["memory"]["error"] = str(e)
 
-    # 知识库相似 chunk 合并
+    # 知识库：自动合并/识别相似 chunk
     try:
         from .consolidator import consolidate
 
-        if cfg["consolidate_chunks"]:
+        if cfg["auto_consolidate"] and llm_ready:
             consolidation = consolidate(
                 db_path,
                 threshold=cfg["consolidate_threshold"],
                 min_cluster_size=cfg["consolidate_min_cluster_size"],
                 max_chunks=cfg["consolidate_max_chunks"],
                 llm_client=llm_client,
-                apply=cfg.get("consolidate_apply", False),
+                apply=True,
             )
             result["consolidation"] = {
                 "status": consolidation.get("status"),
@@ -303,8 +322,25 @@ def _run_housekeeping(
                 "removed": consolidation.get("removed", 0),
                 "inserted": consolidation.get("inserted", 0),
             }
-            # 仅在 full 模式下保留详细 clusters，避免 brief 占用过多 token
+        elif cfg["identify_similar_chunks"]:
+            consolidation = consolidate(
+                db_path,
+                threshold=cfg["consolidate_threshold"],
+                min_cluster_size=cfg["consolidate_min_cluster_size"],
+                max_chunks=cfg["consolidate_max_chunks"],
+            )
+            result["consolidation"] = {
+                "status": consolidation.get("status"),
+                "total_chunks": consolidation.get("total_chunks", 0),
+                "cluster_count": consolidation.get("cluster_count", 0),
+            }
             result["consolidation"]["clusters"] = consolidation.get("clusters", [])
+            if not llm_ready:
+                result["consolidation"]["apply"] = {
+                    "skipped": True,
+                    "reason": "llm_not_ready",
+                    "note": "提供 llm_config 后可自动合并，否则请基于 clusters 手动调用 shibei_apply_consolidation",
+                }
         else:
             result["consolidation"] = {"skipped": True}
     except Exception as e:
@@ -321,14 +357,21 @@ def dream(db_path: Path,
           housekeeping: Optional[dict] = None) -> dict:
     """执行 dreaming — 知识库自主思考 + 自动整理。
 
+    dreaming 默认自动完成整理：
+      - 清理过期记忆
+      - 自动压缩旧短期记忆（需 LLM；未提供时返回候选）
+      - 自动合并相似 chunk（需 LLM；未提供时返回候选）
+
+    当传入 llm_client 时，dreaming 会直接修改数据；
+    当未传入 LLM 时，退化为 skill 形式，只返回候选供外部 Agent 判断。
+
     Args:
         db_path: 数据存储根路径
         persist: 是否持久化结果到 ~/.shibei/dreams/
         compare: 是否与上次 dream 结果对比，输出增量变化
         format: 输出格式 "full" 完整 / "brief" 精简（MCP 默认用 brief）
-        llm_client: LLM 客户端，启用时增强洞察生成
-        housekeeping: 控制是否执行记忆清理/压缩/知识库合并；
-                      传 False 禁用，传 dict 覆盖默认配置
+        llm_client: LLM 客户端；提供时自动执行压缩与合并
+        housekeeping: 控制整理行为；传 False 禁用，传 dict 覆盖默认配置
     """
     chunks = load_chunks(db_path)
 
@@ -339,20 +382,7 @@ def dream(db_path: Path,
     patterns = find_patterns(chunks)
     insights = generate_insights(chunks, cross_refs, patterns)
 
-    # LLM 增强洞察：失败时静默降级，不影响基础洞察
-    if llm_client and llm_client.ready:
-        try:
-            all_keywords = []
-            for chunk in chunks:
-                all_keywords.extend(chunk.get("keywords", []))
-            top_keywords = [w for w, _ in Counter(all_keywords).most_common(20)]
-            llm_insights = llm_client.enhance_insights(chunks, top_keywords)
-            for ins in llm_insights:
-                insights.append(f"[LLM] {ins}")
-        except (ConnectionError, TimeoutError, ValueError, RuntimeError) as e:
-            logger.warning("LLM 洞察增强失败: %s", e)
-
-    # 自动整理（housekeeping）
+    # 整理（housekeeping）：自动执行或输出建议
     hk_result = _run_housekeeping(
         db_path,
         llm_client=llm_client,

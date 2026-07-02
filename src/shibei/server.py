@@ -1,11 +1,13 @@
 """MCP JSON-RPC stdio server — 任何 MCP 兼容 Agent 可接入。
 
-暴露五个工具：
-  - shibei_search      : 语义搜索
-  - shibei_import      : 导入文档
-  - shibei_list_sources: 列出已入库文件
-  - shibei_dream       : 知识库洞察
-  - shibei_remember    : 写入 Agent 对话记忆
+暴露七个工具：
+  - shibei_search            : 语义搜索
+  - shibei_import            : 导入文档
+  - shibei_list_sources      : 列出已入库文件
+  - shibei_dream             : 知识库洞察 + 整理建议（skill 形式，零 LLM 依赖）
+  - shibei_remember          : 写入 Agent 对话记忆
+  - shibei_update_memory     : 更新/压缩已有记忆
+  - shibei_apply_consolidation: 根据外部 Agent 提供的摘要直接合并相似 chunk
 
 接入方式（以 Hermes config.yaml 为例）：
   mcp_servers:
@@ -53,10 +55,29 @@ def _handle_list_sources(brain, args):
 
 
 def _handle_dream(brain, args):
+    llm_client = None
+    llm_config = args.get("llm_config")
+    if llm_config:
+        from .llm import LLMClient, LLMConfig
+
+        cfg = LLMConfig(
+            enabled=True,
+            api_key=llm_config.get("api_key", ""),
+            model=llm_config.get("model", "deepseek-chat"),
+            base_url=llm_config.get(
+                "base_url", "https://api.deepseek.com/v1"
+            ),
+            temperature=llm_config.get("temperature", 0.3),
+            max_tokens=llm_config.get("max_tokens", 1024),
+            timeout=llm_config.get("timeout", 30.0),
+        )
+        llm_client = LLMClient(cfg)
+
     return brain.dream(
         format=args.get("format", "brief"),
         persist=args.get("persist", True),
         housekeeping=args.get("housekeeping"),
+        llm_client=llm_client,
     )
 
 
@@ -69,6 +90,12 @@ def _handle_consolidate(brain, args):
     )
 
 
+def _handle_apply_consolidation(brain, args):
+    return brain.apply_consolidation(
+        clusters=args.get("clusters", []),
+    )
+
+
 def _handle_remember(brain, args):
     return brain.remember(
         fact=args.get("fact", ""),
@@ -76,6 +103,14 @@ def _handle_remember(brain, args):
         source=args.get("source", ""),
         tags=args.get("tags", ""),
         expires_at=args.get("expires_at"),
+    )
+
+
+def _handle_update_memory(brain, args):
+    return brain.update_memory(
+        memory_id=args.get("memory_id", ""),
+        fact=args.get("fact", ""),
+        tags=args.get("tags"),
     )
 
 
@@ -137,7 +172,7 @@ TOOLS = {
     },
     "shibei_dream": {
         "handler": _handle_dream,
-        "description": "知识库 dreaming — 发现隐藏连接、跨文档关联、主题模式和洞察，并自动执行整理：清理过期记忆、压缩旧短期记忆、合并相似 chunk。默认精简输出（stats+insights+housekeeping统计），需要完整 cross_references 时用 full 格式。",
+        "description": "知识库 dreaming — 发现隐藏连接、跨文档关联、主题模式，并自动整理：清理过期记忆、压缩旧短期记忆、合并相似 chunk。默认使用 Shibei 自身配置的 LLM 自动完成压缩与合并；可通过 llm_config 透传外部 Agent 的 LLM 进行覆盖；仅当没有任何 LLM 可用时退化为 skill 形式，只输出候选建议。默认精简输出（stats+insights+housekeeping统计），需要完整 cross_references 时用 full 格式。",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -155,7 +190,20 @@ TOOLS = {
                 "housekeeping": {
                     "type": ["boolean", "object"],
                     "default": True,
-                    "description": "是否执行自动整理。false=禁用；true=使用默认配置；object=自定义配置（如 {\"compress_max_age_days\": 30, \"consolidate_threshold\": 0.6}）",
+                    "description": "是否执行整理。false=禁用；true=使用默认配置；object=自定义配置（如 {\"auto_compress\": true, \"auto_consolidate\": true, \"compress_max_age_days\": 30}）",
+                },
+                "llm_config": {
+                    "type": "object",
+                    "description": "可选：外部 Agent 透传的 LLM 配置，用于覆盖 Shibei 自身 LLM。提供时 dreaming 使用该配置自动压缩旧记忆并合并相似 chunk；未提供时优先使用 Shibei 自身配置的 LLM，未配置时才返回候选建议",
+                    "properties": {
+                        "api_key": {"type": "string", "description": "LLM API key"},
+                        "model": {"type": "string", "default": "deepseek-chat", "description": "模型名"},
+                        "base_url": {"type": "string", "default": "https://api.deepseek.com/v1", "description": "API base URL"},
+                        "temperature": {"type": "number", "default": 0.3},
+                        "max_tokens": {"type": "integer", "default": 1024},
+                        "timeout": {"type": "number", "default": 30.0},
+                    },
+                    "required": ["api_key"],
                 },
             },
         },
@@ -184,9 +232,43 @@ TOOLS = {
                 "apply": {
                     "type": "boolean",
                     "default": False,
-                    "description": "是否将合并摘要写回知识库并删除原重叠 chunks（谨慎使用）",
+                    "description": "是否将合并摘要写回知识库并删除原重叠 chunks（谨慎使用）。若未配置 Shibei 自身 LLM，建议用 shibei_apply_consolidation 传入外部生成的摘要",
                 },
             },
+        },
+    },
+    "shibei_apply_consolidation": {
+        "handler": _handle_apply_consolidation,
+        "description": "根据外部 Agent（如 dreaming skill）提供的 cluster 摘要，直接删除原重叠 chunks 并把合并摘要写回知识库。零 LLM 依赖：摘要必须由调用方提前生成。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "clusters": {
+                    "type": "array",
+                    "description": "要应用的 cluster 列表，每项包含 rowids（整数列表）、summary（合并摘要）、sources（来源路径列表）",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "rowids": {
+                                "type": "array",
+                                "items": {"type": "integer"},
+                                "description": "要合并的 chunk rowid 列表，来自 shibei_dream 或 shibei_consolidate 返回的 cluster.chunks._rowid",
+                            },
+                            "summary": {
+                                "type": "string",
+                                "description": "由外部 LLM 生成的合并摘要",
+                            },
+                            "sources": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "来源文件路径列表（可选）",
+                            },
+                        },
+                        "required": ["rowids", "summary"],
+                    },
+                },
+            },
+            "required": ["clusters"],
         },
     },
     "shibei_remember": {
@@ -219,6 +301,28 @@ TOOLS = {
                 },
             },
             "required": ["fact"],
+        },
+    },
+    "shibei_update_memory": {
+        "handler": _handle_update_memory,
+        "description": "更新一条已存在的 Shibei 记忆内容。通常由 dreaming 建议压缩旧记忆后，Agent 用自己的 LLM 判断并执行压缩。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "memory_id": {
+                    "type": "string",
+                    "description": "要更新的记忆 ID（从 list_memories / dreaming 中获取）",
+                },
+                "fact": {
+                    "type": "string",
+                    "description": "更新后的记忆内容",
+                },
+                "tags": {
+                    "type": "string",
+                    "description": "更新后的标签（可选，不传则保持原标签）",
+                },
+            },
+            "required": ["memory_id", "fact"],
         },
     },
 }

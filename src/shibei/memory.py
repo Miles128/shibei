@@ -16,7 +16,7 @@ import logging
 from abc import ABC, abstractmethod
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 from .tokenizer import tokenize_text, tokenize_query
 
@@ -463,3 +463,70 @@ class MemoryStore(AbstractMemoryStore):
             "deleted": deleted,
             "errors": errors,
         }
+
+    def find_compressible(
+        self,
+        max_age_days: int = 30,
+        keep_recent: int = 10,
+    ) -> List[dict]:
+        """找出可能需要压缩的旧记忆候选，不调用 LLM。
+
+        返回列表（按创建时间倒序），每条包含 id/fact/tags/category/created_at。
+        外部 Agent 可用 LLM 判断生命周期后，再调用 update/update_batch 压缩。
+        """
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=max_age_days)).isoformat(timespec="seconds")
+
+        with sqlite3.connect(str(self.db_file), timeout=30.0) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                f"""
+                SELECT id, fact, tags, category, created_at FROM {MEMORIES_TABLE}
+                WHERE (superseded_by IS NULL OR superseded_by = '')
+                  AND (created_at <= ?)
+                ORDER BY created_at DESC
+                """,
+                (cutoff,),
+            ).fetchall()
+
+        candidates = rows[keep_recent:]
+        return [
+            {
+                "id": r["id"],
+                "fact": r["fact"],
+                "tags": r["tags"],
+                "category": r["category"],
+                "created_at": r["created_at"],
+            }
+            for r in candidates
+        ]
+
+    def update(self, memory_id: str, fact: str, tags: 'str | None' = None) -> bool:
+        """更新一条记忆的内容（用于外部 Agent 执行压缩/修正）。"""
+        rowid = self._rowid_by_id(memory_id)
+        if rowid is None:
+            return False
+
+        old = self.get(memory_id)
+        if old is None:
+            return False
+
+        new_tags = tags if tags is not None else old.get("tags", "")
+        category = old.get("category", "") or "user"
+
+        with sqlite3.connect(str(self.db_file), timeout=30.0) as conn:
+            # 先删 FTS 旧索引
+            conn.execute(f"DELETE FROM {FTS_TABLE} WHERE rowid = ?", (rowid,))
+            conn.execute(
+                f"""
+                UPDATE {MEMORIES_TABLE}
+                SET fact = ?, tags = ?
+                WHERE rowid = ?
+                """,
+                (fact, new_tags, rowid),
+            )
+            conn.execute(
+                f"INSERT INTO {FTS_TABLE}(rowid, fact, tags, category) VALUES (?, ?, ?, ?)",
+                (rowid, tokenize_text(fact), tokenize_text(new_tags), category),
+            )
+            conn.commit()
+        return True

@@ -174,6 +174,7 @@ def consolidate(
             "summary": summary,
             "chunks": [
                 {
+                    "_rowid": c.get("_rowid"),
                     "source": c.get("source", ""),
                     "text": c.get("text", "")[:200],
                 }
@@ -249,3 +250,72 @@ def _apply_clusters(db_path: Path, clusters_to_apply: list) -> dict:
     except Exception as e:
         logger.warning("应用合并结果失败: %s", e)
         return {"applied": False, "removed": 0, "inserted": 0, "error": str(e)}
+
+
+def apply_consolidation(db_path: Path, clusters: list[dict]) -> dict:
+    """根据外部 Agent 提供的 cluster 摘要直接应用合并。
+
+    Args:
+        db_path: 数据存储根路径
+        clusters: 每个元素为 {"rowids": [int, ...], "summary": str, "sources": [str, ...]}
+
+    Returns:
+        {"applied": bool, "removed": int, "inserted": int, "invalid_clusters": int}
+    """
+    from .bm25 import BM25Index
+
+    rowids_to_delete = []
+    new_items = []
+    timestamp = datetime.now().strftime("%Y%m%dT%H%M%S")
+    invalid = 0
+
+    for idx, cluster in enumerate(clusters, 1):
+        rowids = cluster.get("rowids", [])
+        summary = cluster.get("summary", "").strip()
+        sources = cluster.get("sources", [])
+
+        valid_rowids = [r for r in rowids if isinstance(r, int)]
+        if not valid_rowids or not summary:
+            invalid += 1
+            continue
+
+        rowids_to_delete.extend(valid_rowids)
+        source_name = sources[0] if sources else "unknown"
+        new_source = f"__consolidated__/{timestamp}/{idx}#{Path(source_name).name}"
+        new_items.append((
+            new_source,
+            new_source,
+            "consolidated",
+            summary,
+            "",
+            "",
+            "",
+        ))
+
+    if not rowids_to_delete or not new_items:
+        return {
+            "applied": False,
+            "removed": 0,
+            "inserted": 0,
+            "invalid_clusters": invalid,
+        }
+
+    try:
+        bm25 = BM25Index(str(db_path / "fts5.db"))
+        bm25.delete_by_rowids(rowids_to_delete)
+        bm25.add_batch(new_items)
+        return {
+            "applied": True,
+            "removed": len(rowids_to_delete),
+            "inserted": len(new_items),
+            "invalid_clusters": invalid,
+        }
+    except Exception as e:
+        logger.warning("应用外部合并结果失败: %s", e)
+        return {
+            "applied": False,
+            "removed": 0,
+            "inserted": 0,
+            "invalid_clusters": invalid,
+            "error": str(e),
+        }

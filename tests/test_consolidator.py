@@ -118,3 +118,58 @@ def test_consolidate_apply_false_does_not_modify(tmp_path):
     assert result["applied"] is False
     assert result["removed"] == 0
     assert bm25.count() == 2
+
+
+def test_apply_consolidation_with_external_summary(tmp_path):
+    """外部 Agent 提供摘要时可直接 apply，无需 LLM。"""
+    from shibei.consolidator import apply_consolidation
+    from shibei.bm25 import BM25Index
+
+    db_path = tmp_path
+    bm25 = BM25Index(str(db_path / "fts5.db"))
+    bm25.add_batch([
+        ("a.md", "a.md", "ai", "Redis 持久化机制包括 RDB 和 AOF 两种方式"),
+        ("b.md", "b.md", "ai", "Redis 使用 RDB 和 AOF 做持久化存储"),
+        ("c.md", "c.md", "ai", "Python 是一门流行的编程语言"),
+    ])
+
+    # 获取 rowids
+    rowids = [r["_rowid"] for r in bm25.search("Redis", limit=10)]
+    assert len(rowids) == 2
+
+    result = apply_consolidation(db_path, clusters=[{
+        "rowids": rowids,
+        "summary": "Redis 使用 RDB 和 AOF 两种持久化机制。",
+        "sources": ["a.md", "b.md"],
+    }])
+
+    assert result["applied"] is True
+    assert result["removed"] == 2
+    assert result["inserted"] == 1
+    assert result["invalid_clusters"] == 0
+    assert bm25.count() == 2
+    sources = bm25.list_sources()
+    assert any(s.startswith("__consolidated__") for s in sources)
+
+
+def test_apply_consolidation_skips_invalid_clusters(tmp_path):
+    """缺少 rowids 或 summary 的 cluster 应被跳过。"""
+    from shibei.consolidator import apply_consolidation
+    from shibei.bm25 import BM25Index
+
+    db_path = tmp_path
+    bm25 = BM25Index(str(db_path / "fts5.db"))
+    bm25.add_batch([
+        ("a.md", "a.md", "ai", "Redis 持久化机制包括 RDB 和 AOF"),
+    ])
+
+    result = apply_consolidation(db_path, clusters=[
+        {"rowids": [], "summary": "空 rowids"},
+        {"rowids": [1], "summary": ""},
+        {"rowids": [1], "summary": "有效合并"},
+    ])
+
+    assert result["applied"] is True
+    assert result["invalid_clusters"] == 2
+    assert result["removed"] == 1
+    assert result["inserted"] == 1
