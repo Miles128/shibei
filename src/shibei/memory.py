@@ -5,6 +5,10 @@
 - BM25 全文搜索
 - 版本链（supersedes）：新事实替代旧事实时保留历史
 
+记忆与文档知识库存放在同一个数据库（fts5.db），仅通过 source/tags 区分来源：
+- 文档 chunk 的 source 为文件路径，tags 为导入时指定的标签
+- 记忆的 source 默认为 "agent"，tags 可携带分类/来源信息
+
 表结构：
     memories(rowid INTEGER PK AUTOINCREMENT, id TEXT UUID, fact, ...)
     memories_fts(rowid INTEGER PK, fact, tags, category)
@@ -16,7 +20,7 @@ import logging
 from abc import ABC, abstractmethod
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 from .tokenizer import tokenize_text, tokenize_query
 
@@ -78,7 +82,8 @@ class MemoryStore(AbstractMemoryStore):
         """
         self.db_dir = Path(db_path)
         self.db_dir.mkdir(parents=True, exist_ok=True)
-        self.db_file = self.db_dir / "memories.db"
+        # 与文档知识库共用同一个数据库文件，通过 source/tags 区分来源
+        self.db_file = self.db_dir / "fts5.db"
         self._init_db()
 
     def _init_db(self):
@@ -131,6 +136,12 @@ class MemoryStore(AbstractMemoryStore):
         memory_id = str(uuid.uuid4())
         created_at = created_at or self._now()
 
+        # 默认来源标签：未指定时标记为 agent，并把 source 纳入 tags 便于统一检索
+        source = (source or "").strip() or "agent"
+        tag_set = {t.strip() for t in (tags or "").split(",") if t.strip()}
+        tag_set.add(source)
+        tags = ",".join(sorted(tag_set))
+
         # 查找最相似的现有记忆
         supersedes = None
         similar = self._find_most_similar(fact, category, limit=1)
@@ -149,8 +160,8 @@ class MemoryStore(AbstractMemoryStore):
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    memory_id, fact, category or "", source or "",
-                    tags or "", created_at, expires_at or "",
+                    memory_id, fact, category or "", source,
+                    tags, created_at, expires_at or "",
                     supersedes or "", "",
                 ),
             )
@@ -371,32 +382,23 @@ class MemoryStore(AbstractMemoryStore):
             conn.commit()
         return deleted
 
-    def compress_old(
+    def find_compressible(
         self,
         max_age_days: int = 30,
         keep_recent: int = 10,
-        llm_client=None,
-    ) -> dict:
-        """压缩旧记忆：只压缩 short_term，跳过 long_term 和 personal。
+    ) -> List[dict]:
+        """找出可能需要压缩的旧记忆候选。
 
-        Args:
-            max_age_days: 超过 N 天的记忆才考虑压缩
-            keep_recent: 最近 N 条记忆始终保留，不压缩
-            llm_client: 用于判断生命周期和生成摘要
-
-        Returns:
-            {"compressed": N, "skipped": M, "deleted": K, "errors": E}
+        返回列表（按创建时间倒序），每条包含 id/fact/tags/category/created_at。
+        外部 Agent 判断生命周期后，可调用 update/update_batch 压缩。
         """
-        if llm_client is None or not getattr(llm_client, "ready", False):
-            return {"compressed": 0, "skipped": 0, "deleted": 0, "errors": 1}
-
         cutoff = (datetime.now(timezone.utc) - timedelta(days=max_age_days)).isoformat(timespec="seconds")
 
         with sqlite3.connect(str(self.db_file), timeout=30.0) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
                 f"""
-                SELECT rowid, id, fact, tags, category, expires_at, created_at FROM {MEMORIES_TABLE}
+                SELECT id, fact, tags, category, created_at FROM {MEMORIES_TABLE}
                 WHERE (superseded_by IS NULL OR superseded_by = '')
                   AND (created_at <= ?)
                 ORDER BY created_at DESC
@@ -405,61 +407,44 @@ class MemoryStore(AbstractMemoryStore):
             ).fetchall()
 
         candidates = rows[keep_recent:]
+        return [
+            {
+                "id": r["id"],
+                "fact": r["fact"],
+                "tags": r["tags"],
+                "category": r["category"],
+                "created_at": r["created_at"],
+            }
+            for r in candidates
+        ]
 
-        compressed = 0
-        skipped = 0
-        deleted = 0
-        errors = 0
+    def update(self, memory_id: str, fact: str, tags: 'str | None' = None) -> bool:
+        """更新一条记忆的内容（用于外部 Agent 执行压缩/修正）。"""
+        rowid = self._rowid_by_id(memory_id)
+        if rowid is None:
+            return False
 
-        for row in candidates:
-            fact = row["fact"]
-            try:
-                lifespan = llm_client.classify_memory_lifespan(fact)
-            except Exception as e:
-                logger.warning("LLM 判断记忆生命周期失败: %s", e)
-                errors += 1
-                continue
+        old = self.get(memory_id)
+        if old is None:
+            return False
 
-            if lifespan in ("long_term", "personal"):
-                skipped += 1
-                continue
+        new_tags = tags if tags is not None else old.get("tags", "")
+        category = old.get("category", "") or "user"
 
-            try:
-                summary = llm_client.summarize(fact, max_length=80)
-                if not summary:
-                    raise ValueError("摘要为空")
-            except Exception as e:
-                logger.warning("摘要生成失败，删除该短期记忆: %s", e)
-                summary = ""
-
-            with sqlite3.connect(str(self.db_file), timeout=30.0) as conn:
-                rowid = row["rowid"]
-                if summary:
-                    tags = (row["tags"] or "") + ",compressed"
-                    category = row["category"] or "user"
-                    conn.execute(f"DELETE FROM {FTS_TABLE} WHERE rowid = ?", (rowid,))
-                    conn.execute(
-                        f"""
-                        UPDATE {MEMORIES_TABLE}
-                        SET fact = ?, tags = ?
-                        WHERE rowid = ?
-                        """,
-                        (summary, tags, rowid),
-                    )
-                    conn.execute(
-                        f"INSERT INTO {FTS_TABLE}(rowid, fact, tags, category) VALUES (?, ?, ?, ?)",
-                        (rowid, tokenize_text(summary), tags, category),
-                    )
-                    compressed += 1
-                else:
-                    conn.execute(f"DELETE FROM {FTS_TABLE} WHERE rowid = ?", (rowid,))
-                    conn.execute(f"DELETE FROM {MEMORIES_TABLE} WHERE rowid = ?", (rowid,))
-                    deleted += 1
-                conn.commit()
-
-        return {
-            "compressed": compressed,
-            "skipped": skipped,
-            "deleted": deleted,
-            "errors": errors,
-        }
+        with sqlite3.connect(str(self.db_file), timeout=30.0) as conn:
+            # 先删 FTS 旧索引
+            conn.execute(f"DELETE FROM {FTS_TABLE} WHERE rowid = ?", (rowid,))
+            conn.execute(
+                f"""
+                UPDATE {MEMORIES_TABLE}
+                SET fact = ?, tags = ?
+                WHERE rowid = ?
+                """,
+                (fact, new_tags, rowid),
+            )
+            conn.execute(
+                f"INSERT INTO {FTS_TABLE}(rowid, fact, tags, category) VALUES (?, ?, ?, ?)",
+                (rowid, tokenize_text(fact), tokenize_text(new_tags), category),
+            )
+            conn.commit()
+        return True

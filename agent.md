@@ -37,8 +37,8 @@ Shibei（十倍）是面向 AI Agent 的中文语义知识库，定位为 Agent 
 - **文档导入**：扫描目录 → 分块 → 去重 → 存入 BM25 索引
 - **全文搜索**：基于 SQLite FTS5 的 BM25 搜索引擎
 - **对话记忆**：Agent 对话事实的持久化存储与版本链
-- **Dreaming**：知识库自主思考，发现跨文档隐藏连接，并自动整理记忆与相似 chunk
-- **MCP 协议**：5 个 MCP 工具供 AI Agent 直接调用
+- **Dreaming**：知识库自主思考，发现跨文档隐藏连接，并以 skill 形式输出整理建议（可压缩记忆候选、相似 chunk 候选），由外部 Agent 用 LLM 判断后执行
+- **MCP 协议**：7 个 MCP 工具供 AI Agent 直接调用：search、import、list_sources、remember、update_memory、consolidate/apply_consolidation、dream
 
 ## 技术栈
 

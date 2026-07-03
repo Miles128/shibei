@@ -130,9 +130,9 @@ tagging:
 
 搜索时支持标签过滤：`shibei search "风控" --tag finance`
 
-### Dreaming — 知识库自主整理
+### Dreaming — 知识库洞察与整理建议
 
-扫描所有文档，发现隐藏连接和洞察，并自动整理知识库：
+扫描所有文档，发现隐藏连接和洞察，并以 **skill** 形式输出整理建议（零 LLM 依赖）：
 
 ```bash
 shibei dream run
@@ -142,10 +142,10 @@ shibei dream run
 - **跨文档连接**：哪些文档通过共享关键词关联
 - **主题模式**：每个标签下的高频主题
 - **洞察**：全局高频主题、孤立文档等
-- **自动整理**：
-  - 清理过期记忆
-  - 使用 LLM 判断记忆生命周期，仅压缩短期记忆，保留长期/个人记忆
-  - 基于 Overlap 系数聚类合并相似 chunk
+- **整理建议**：
+  - 清理过期记忆（自动执行）
+  - 识别可压缩的旧记忆候选（由 Agent 用 LLM 判断后执行）
+  - 识别相似的 chunk 候选（由 Agent 用 LLM 生成摘要后执行）
 
 ## MCP 接入（给 Agent）
 
@@ -163,12 +163,14 @@ mcp_servers:
       SHIBEI_CONFIG: /path/to/your/config.yaml
 ```
 
-Agent 获得 5 个工具：
+Agent 获得 7 个工具：
 - `shibei_search` — 语义搜索（文档 + 记忆 + 相关推荐）
 - `shibei_import` — 导入文档
 - `shibei_list_sources` — 列出已入库文件
 - `shibei_remember` — 写入长期记忆
-- `shibei_dream` — 生成跨文档洞察并自动整理
+- `shibei_update_memory` — 更新/压缩已有记忆
+- `shibei_consolidate` / `shibei_apply_consolidation` — 发现/合并相似 chunk（后者支持外部 Agent 提供摘要，零 LLM 依赖）
+- `shibei_dream` — 生成跨文档洞察与整理建议（skill 形式）
 
 ## 配置
 
@@ -217,7 +219,7 @@ CLI (shibei)
         ├── MemoryStore ──→ SQLite (BM25 召回) + 版本链
         ├── Manifest ──→ 文件 hash 追踪 (增量导入)
         ├── Profile ──→ 多场景配置切换
-        ├── Dreamer ──→ 跨文档洞察 + 自动整理
+        ├── Dreamer ──→ 跨文档洞察 + 整理建议（skill 形式）
         └── Server ──→ MCP JSON-RPC (Agent 接入)
 ```
 
@@ -227,7 +229,7 @@ CLI (shibei)
 PYTHONPATH=src pytest tests/ -v
 ```
 
-测试覆盖：配置加载、标签推断、分块逻辑、BM25 摘要索引、记忆召回、轻量关联、增量追踪、Profile 管理、Dreaming 整理。
+测试覆盖：配置加载、标签推断、分块逻辑、BM25 摘要索引、记忆召回、轻量关联、增量追踪、Profile 管理、Dreaming 洞察与整理建议。
 
 ## 依赖
 

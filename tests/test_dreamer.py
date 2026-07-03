@@ -225,57 +225,8 @@ def test_dream_brief_format():
         assert "patterns" not in brief
 
 
-def test_dream_llm_enhancement():
-    """LLM 启用时 dream 会追加 [LLM] 洞察"""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = Path(tmpdir)
-        from shibei.bm25 import BM25Index
-        bm25 = BM25Index(str(db_path / "fts5.db"))
-        bm25.add_batch([
-            ("/a.md", "/a.md", "ai", "人工智能正在改变世界。", "", ""),
-            ("/b.md", "/b.md", "ai", "大模型技术突破。", "", ""),
-        ])
-
-        from shibei.llm import LLMConfig, LLMClient
-        from shibei.dreamer import dream
-
-        llm = LLMClient(LLMConfig(enabled=True, provider="openai-compatible", api_key="sk-test"))
-        llm.chat = lambda prompt, system_prompt=None: '["跨文档共同指向 AI 主题"]'
-
-        result = dream(db_path, format="brief",
-                       persist=False, compare=False, llm_client=llm)
-        assert result["status"] == "ok"
-        assert any("[LLM]" in ins for ins in result["insights"])
-
-
-def test_dream_llm_failure_graceful_degrade():
-    """LLM 调用失败时不影响基础洞察"""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = Path(tmpdir)
-        from shibei.bm25 import BM25Index
-        bm25 = BM25Index(str(db_path / "fts5.db"))
-        bm25.add_batch([
-            ("/a.md", "/a.md", "ai", "人工智能正在改变世界。", "", ""),
-            ("/b.md", "/b.md", "ai", "大模型技术突破。", "", ""),
-        ])
-
-        from shibei.llm import LLMConfig, LLMClient
-        from shibei.dreamer import dream
-
-        llm = LLMClient(LLMConfig(enabled=True, provider="openai-compatible", api_key="sk-test"))
-        llm.chat = lambda prompt, system_prompt=None: (_ for _ in ()).throw(
-            RuntimeError("mock failure")
-        )
-
-        result = dream(db_path, format="brief",
-                       persist=False, compare=False, llm_client=llm)
-        assert result["status"] == "ok"
-        assert len(result["insights"]) > 0
-        assert not any("[LLM]" in ins for ins in result["insights"])
-
-
 def test_dream_housekeeping_default_runs():
-    """默认 dream 会执行 housekeeping"""
+    """默认 dream 会执行 housekeeping 发现任务"""
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = Path(tmpdir)
         from shibei.bm25 import BM25Index
@@ -290,12 +241,12 @@ def test_dream_housekeeping_default_runs():
         assert result["status"] == "ok"
         assert "housekeeping" in result
         assert result["housekeeping"]["enabled"] is True
-        assert "memory" in result["housekeeping"]
+        assert "compressible_candidates" in result["housekeeping"]["memory"]
         assert "consolidation" in result["housekeeping"]
 
 
-def test_dream_housekeeping_apply_consolidation():
-    """dream housekeeping 中 consolidate_apply=True 会写回数据库"""
+def test_dream_housekeeping_identifies_similar_chunks():
+    """dream housekeeping 识别相似 chunk 候选，不自动 apply"""
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = Path(tmpdir)
         from shibei.bm25 import BM25Index
@@ -305,19 +256,44 @@ def test_dream_housekeeping_apply_consolidation():
             ("/b.md", "/b.md", "ai", "Redis 使用 RDB 和 AOF 做持久化存储", "", ""),
         ])
 
-        from shibei.llm import LLMConfig, LLMClient
-        llm = LLMClient(LLMConfig(enabled=True, provider="openai-compatible", api_key="sk-test"))
-        llm.summarize = lambda text, max_length=100: "Redis 使用 RDB 和 AOF 持久化。"
-
         result = dream(db_path, format="full",
                        persist=False, compare=False,
-                       llm_client=llm,
-                       housekeeping={"consolidate_apply": True,
-                                     "consolidate_threshold": 0.3})
+                       housekeeping={"consolidate_threshold": 0.3})
         assert result["status"] == "ok"
         cons = result["housekeeping"]["consolidation"]
-        assert cons.get("applied") is True
-        assert cons.get("removed", 0) >= 2
-        assert cons.get("inserted", 0) >= 1
+        assert cons.get("cluster_count", 0) >= 1
+        # 不自动 apply，summary 为空，由外部 Agent 生成
+        cluster = cons["clusters"][0]
+        assert cluster.get("summary") == ""
+
+
+def test_dream_identifies_compressible_memories():
+    """dream housekeeping 识别可压缩记忆候选，不自动压缩。"""
+    from datetime import datetime, timezone, timedelta
+    from shibei.memory import MemoryStore
+    from shibei.bm25 import BM25Index
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db_path = Path(tmpdir)
+        # dream 依赖 BM25 chunks 判断是否为空；至少保留一个 chunk
+        bm25 = BM25Index(str(db_path / "fts5.db"))
+        bm25.add_batch([
+            ("/notes.md", "/notes.md", "ai", " dreaming 占位 chunk", "", ""),
+        ])
+
+        store = MemoryStore(db_path)
+        old = (datetime.now(timezone.utc) - timedelta(days=60)).isoformat(timespec="seconds")
+        store.add("临时计划 A", category="user", created_at=old, supersede_threshold=2.0)
+        store.add("临时计划 B", category="user", created_at=old, supersede_threshold=2.0)
+        store.add("长期项目目标", category="user", created_at=old, supersede_threshold=2.0)
+
+        result = dream(
+            db_path, format="full", persist=False, compare=False,
+            housekeeping={"compress_keep_recent": 0},
+        )
+        assert result["status"] == "ok"
+        mem = result["housekeeping"]["memory"]
+        assert mem["compressible_count"] == 3
+        assert len(mem["compressible_candidates"]) == 3
 
 

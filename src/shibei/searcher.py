@@ -5,11 +5,9 @@
 
 import logging
 from abc import ABC, abstractmethod
-from typing import Optional
 
 from .config import Config
 from .bm25 import BM25Index
-from .llm import LLMClient
 
 logger = logging.getLogger(__name__)
 
@@ -47,11 +45,10 @@ def register_engine(name: str, engine_cls: type[SearchEngine]) -> None:
 
 
 class Searcher:
-    """BM25 搜索入口，支持 LLM 查询改写和记忆召回。"""
+    """BM25 搜索入口，支持记忆召回。"""
 
-    def __init__(self, cfg: Config, llm_client: Optional[LLMClient] = None):
+    def __init__(self, cfg: Config):
         self.cfg = cfg
-        self.llm = llm_client
 
     def search(
         self,
@@ -60,18 +57,6 @@ class Searcher:
         tag: 'str | None' = None,
         include_memories: bool = True,
     ) -> dict:
-        original_query = query
-
-        # LLM 查询改写：失败时静默回退到原查询
-        search_query = query
-        if self.llm and self.llm.ready:
-            try:
-                rewritten = self.llm.rewrite_query(query)
-                if rewritten:
-                    search_query = rewritten
-            except (ConnectionError, TimeoutError, ValueError, RuntimeError) as e:
-                logger.warning("LLM 查询改写失败，回退到原查询: %s", e)
-
         engine_name = self.cfg.storage.search_engine
         engine_cls = _ENGINES.get(engine_name)
         if engine_cls is None:
@@ -79,13 +64,10 @@ class Searcher:
             engine_cls = BM25Engine
 
         engine = engine_cls(self.cfg)
-        result = engine.search(search_query, limit, tag)
-
-        result["original_query"] = original_query
-        result["rewritten_query"] = search_query
+        result = engine.search(query, limit, tag)
 
         if include_memories:
-            result["memories"] = self._search_memories(original_query, limit)
+            result["memories"] = self._search_memories(query, limit)
 
         result["related"] = self._find_related(result.get("results", []))
         return result

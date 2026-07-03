@@ -7,8 +7,8 @@
   1. 加载所有 chunks（BM25 FTS5）
   2. 计算两两之间的 token Overlap 系数
   3. 用阈值聚类（传递闭包）
-  4. 对每个 cluster 用 LLM 生成合并摘要
-  5. 输出合并报告（不自动写回原库，避免误删）
+  4. 输出相似 chunk 候选报告（不生成摘要，不自动写回原库）
+  5. 外部 Agent 生成摘要后，可通过 apply_consolidation 写回数据库
 
 未来可扩展：
   - 支持按 source 合并整篇文档
@@ -86,57 +86,27 @@ def _cluster_by_edges(n: int, edges: list[tuple[int, int, float]]) -> list[list[
     return clusters
 
 
-def _merge_cluster_with_llm(cluster_chunks: list[dict], llm_client) -> str:
-    """用 LLM 把一组相似 chunk 合并成精炼摘要。"""
-    sources = []
-    texts = []
-    for c in cluster_chunks:
-        src = c.get("source", "unknown")
-        text = c.get("text", "").strip()
-        if text:
-            sources.append(Path(src).name)
-            texts.append(text)
-
-    combined = "\n\n---\n\n".join(texts)
-    prompt = f"""以下是知识库中若干条高度相似的内容片段，可能来自不同文档。
-请把它们合并整理成一段精炼的中文摘要，去除重复表述，保留核心信息。
-不要添加原文中没有的信息，不要输出解释。
-
-来源：{', '.join(sorted(set(sources)))}
-
-内容：
-{combined}
-
-请输出合并后的摘要："""
-
-    return llm_client.summarize(combined, max_length=300)
-
-
 def consolidate(
     db_path: Path,
     threshold: float = 0.6,
     min_cluster_size: int = 2,
     max_chunks: int = 500,
-    llm_client=None,
-    apply: bool = False,
 ) -> dict:
-    """整理知识库：发现相似 chunk 并生成合并摘要；可选 apply 写回数据库。
+    """整理知识库：发现相似 chunk 聚类（零 LLM 依赖）。
+
+    合并摘要必须由外部 Agent 提供后，再通过 apply_consolidation 写入数据库。
 
     Args:
-        db_path: 数据存储根路径
+        db_path: 数据库存储根路径
         threshold: Overlap 相似度阈值（0~1），越高要求越严格
         min_cluster_size: 最小组大小，小于此值的孤立 chunk 不处理
         max_chunks: 最大处理 chunk 数
-        llm_client: 用于生成合并摘要；未提供时只返回聚类结果
-        apply: 是否把合并摘要写回知识库并删除原重叠 chunks
 
     Returns:
         {
             "status": "ok" | "empty",
             "total_chunks": N,
-            "applied": False,
-            "removed": 0,
-            "inserted": 0,
+            "cluster_count": N,
             "clusters": [...]
         }
     """
@@ -148,12 +118,6 @@ def consolidate(
     clusters = _cluster_by_edges(len(chunks), edges)
 
     result_clusters = []
-    applied = False
-    removed = 0
-    inserted = 0
-
-    # apply 模式下需要操作的集群列表
-    clusters_to_apply = []
 
     for cluster in clusters:
         if len(cluster) < min_cluster_size:
@@ -161,19 +125,13 @@ def consolidate(
         cluster_chunks = [chunks[i] for i in cluster]
         sources = sorted(set(c.get("source", "unknown") for c in cluster_chunks))
 
-        summary = ""
-        if llm_client and getattr(llm_client, "ready", False):
-            try:
-                summary = _merge_cluster_with_llm(cluster_chunks, llm_client)
-            except Exception as e:
-                logger.warning("合并摘要生成失败: %s", e)
-
         result_clusters.append({
             "size": len(cluster),
             "sources": sources,
-            "summary": summary,
+            "summary": "",
             "chunks": [
                 {
+                    "_rowid": c.get("_rowid"),
                     "source": c.get("source", ""),
                     "text": c.get("text", "")[:200],
                 }
@@ -181,23 +139,11 @@ def consolidate(
             ],
         })
 
-        if summary and apply:
-            clusters_to_apply.append((cluster_chunks, summary, sources))
-
-    if apply and clusters_to_apply:
-        applied_rows = _apply_clusters(db_path, clusters_to_apply)
-        applied = applied_rows["applied"]
-        removed = applied_rows["removed"]
-        inserted = applied_rows["inserted"]
-
     return {
         "status": "ok",
         "total_chunks": len(chunks),
         "cluster_count": len(result_clusters),
         "threshold": threshold,
-        "applied": applied,
-        "removed": removed,
-        "inserted": inserted,
         "clusters": result_clusters,
     }
 
@@ -249,3 +195,72 @@ def _apply_clusters(db_path: Path, clusters_to_apply: list) -> dict:
     except Exception as e:
         logger.warning("应用合并结果失败: %s", e)
         return {"applied": False, "removed": 0, "inserted": 0, "error": str(e)}
+
+
+def apply_consolidation(db_path: Path, clusters: list[dict]) -> dict:
+    """根据外部 Agent 提供的 cluster 摘要直接应用合并。
+
+    Args:
+        db_path: 数据存储根路径
+        clusters: 每个元素为 {"rowids": [int, ...], "summary": str, "sources": [str, ...]}
+
+    Returns:
+        {"applied": bool, "removed": int, "inserted": int, "invalid_clusters": int}
+    """
+    from .bm25 import BM25Index
+
+    rowids_to_delete = []
+    new_items = []
+    timestamp = datetime.now().strftime("%Y%m%dT%H%M%S")
+    invalid = 0
+
+    for idx, cluster in enumerate(clusters, 1):
+        rowids = cluster.get("rowids", [])
+        summary = cluster.get("summary", "").strip()
+        sources = cluster.get("sources", [])
+
+        valid_rowids = [r for r in rowids if isinstance(r, int)]
+        if not valid_rowids or not summary:
+            invalid += 1
+            continue
+
+        rowids_to_delete.extend(valid_rowids)
+        source_name = sources[0] if sources else "unknown"
+        new_source = f"__consolidated__/{timestamp}/{idx}#{Path(source_name).name}"
+        new_items.append((
+            new_source,
+            new_source,
+            "consolidated",
+            summary,
+            "",
+            "",
+            "",
+        ))
+
+    if not rowids_to_delete or not new_items:
+        return {
+            "applied": False,
+            "removed": 0,
+            "inserted": 0,
+            "invalid_clusters": invalid,
+        }
+
+    try:
+        bm25 = BM25Index(str(db_path / "fts5.db"))
+        bm25.delete_by_rowids(rowids_to_delete)
+        bm25.add_batch(new_items)
+        return {
+            "applied": True,
+            "removed": len(rowids_to_delete),
+            "inserted": len(new_items),
+            "invalid_clusters": invalid,
+        }
+    except Exception as e:
+        logger.warning("应用外部合并结果失败: %s", e)
+        return {
+            "applied": False,
+            "removed": 0,
+            "inserted": 0,
+            "invalid_clusters": invalid,
+            "error": str(e),
+        }
