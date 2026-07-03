@@ -138,7 +138,9 @@ class Importer:
 
         chunks_data = unique_chunks
 
-        self._import_bm25(chunks_data, to_remove)
+        # 需要清理旧 chunk 的 source：已删除文件 + 内容变更文件
+        sources_to_clear = list(to_remove) + [str(f) for f in to_update]
+        self._import_bm25(chunks_data, sources_to_clear)
 
         # manifest 统一更新一次
         for fp in to_remove:
@@ -154,7 +156,7 @@ class Importer:
             "files": len(changed),
             "chunks": len(chunks_data),
             "skipped": skipped,
-            "removed": len(to_remove),
+            "removed": len(sources_to_clear),
             "deduped": deduped,
             "status": "ok",
         }
@@ -162,17 +164,16 @@ class Importer:
             result["warnings"] = warnings
         return result
 
-    def _import_bm25(self, chunks_data: list, to_remove: list[str]):
-        """把分块写入 BM25 索引，并删除已移除文件的旧 chunk。"""
+    def _import_bm25(self, chunks_data: list, sources_to_clear: list[str]):
+        """把分块写入 BM25 索引，并删除已移除/变更文件的旧 chunk。"""
         from .bm25 import BM25Index
 
         db_path = self.cfg.db_path_expanded / "fts5.db"
         bm25 = BM25Index(str(db_path))
 
-        # 删除已移除/变更文件的旧 chunk
-        for fp in to_remove:
-            bm25.remove_sources(fp)
-        # 变更文件会在 remove_by_source 中删除旧 chunk，然后下面 add_batch 写入新 chunk
+        # 批量删除旧 chunk（整传入 list，避免按字符拆分）
+        if sources_to_clear:
+            bm25.remove_sources(sources_to_clear)
 
         if chunks_data:
             bm25.add_batch(chunks_data)

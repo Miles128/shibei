@@ -2,7 +2,7 @@
 
 **中文轻量知识库 + Agent 长期记忆 —— 给 AI Agent 用的外部大脑。**
 
-> 扫描 Markdown/Word/Excel/TXT → 自动摘要 → 中文语义分块 → BM25 全文检索 → Agent 随时搜索
+> 扫描 Markdown/Word/Excel/TXT → 中文语义分块 → BM25 全文检索 → Agent 随时搜索
 
 ## 30 秒上手
 
@@ -44,17 +44,6 @@ extensions:
   - .docx
   - .xlsx
   - .csv
-```
-
-### 一句话摘要 + BM25 召回
-
-导入时自动为每个 chunk 生成一句话中文摘要，同时建立**正文索引**和**摘要索引**。搜索时两边一起召回，命中率和语义覆盖度显著提升，最终返回给 LLM 的仍是原始正文。
-
-```yaml
-# config.yaml（默认已开启）
-summarize:
-  enabled: true
-  max_length: 100
 ```
 
 ### BM25 全文搜索
@@ -135,7 +124,7 @@ tagging:
 扫描所有文档，发现隐藏连接和洞察，并以 **skill** 形式输出整理建议（零 LLM 依赖）：
 
 ```bash
-shibei dream run
+shibei dream
 ```
 
 输出：
@@ -169,7 +158,8 @@ Agent 获得 7 个工具：
 - `shibei_list_sources` — 列出已入库文件
 - `shibei_remember` — 写入长期记忆
 - `shibei_update_memory` — 更新/压缩已有记忆
-- `shibei_consolidate` / `shibei_apply_consolidation` — 发现/合并相似 chunk（后者支持外部 Agent 提供摘要，零 LLM 依赖）
+- `shibei_consolidate` — 发现相似 chunk 聚类；设置 `apply=true` 可直接合并（零 LLM 依赖）
+- `shibei_apply_consolidation` — 根据外部 Agent 提供的摘要合并相似 chunk
 - `shibei_dream` — 生成跨文档洞察与整理建议（skill 形式）
 
 ## 配置
@@ -186,14 +176,11 @@ chunking:
   max_chars: 800
   split_pattern: "\n(?=## )"  # 按 ## 标题分块
 
-summarize:
-  enabled: true               # 默认开启 chunk 一句话摘要
-  max_length: 100             # 摘要最大字符数
-
 tagging:
+  path_rules:
+    - pattern: "面试/HSBC/*.md"
+      tags: "interview,hsbc"
   rules:
-    - pattern: "(面试|复盘)"
-      tag: interview
     - pattern: "(AI|大模型)"
       tag: ai
 ```
@@ -206,7 +193,6 @@ tagging:
 |------|--------|
 | `SHIBEI_CONFIG` | 配置文件路径 |
 | `SHIBEI_SOURCES` | sources（逗号分隔） |
-| `SHIBEI_LLM_API_KEY` | llm.api_key |
 | `SHIBEI_MCP_DEBUG` | MCP server 调试模式 |
 
 ## 架构
@@ -214,7 +200,7 @@ tagging:
 ```
 CLI (shibei)
   └── Shibei (服务层)
-        ├── Importer ──→ BM25 (FTS5，content + summary 双索引)
+        ├── Importer ──→ BM25 (FTS5)
         ├── Searcher ──→ BM25 搜索 + 相关推荐
         ├── MemoryStore ──→ SQLite (BM25 召回) + 版本链
         ├── Manifest ──→ 文件 hash 追踪 (增量导入)
@@ -229,7 +215,7 @@ CLI (shibei)
 PYTHONPATH=src pytest tests/ -v
 ```
 
-测试覆盖：配置加载、标签推断、分块逻辑、BM25 摘要索引、记忆召回、轻量关联、增量追踪、Profile 管理、Dreaming 洞察与整理建议。
+测试覆盖：配置加载、标签推断、分块逻辑、BM25 索引、记忆召回、轻量关联、增量追踪、Profile 管理、Dreaming 洞察与整理建议。
 
 ## 依赖
 

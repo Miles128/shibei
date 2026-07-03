@@ -83,7 +83,7 @@ AI Agent 正在从“单次会话工具”演化为“长期协作助手”，�
 
 ### 4.1 价值主张陈述
 
-> 对希望让 AI Agent 长期记住并使用个人知识的中文用户而言，Shibei 是一个**零外部依赖、纯本地、MCP 原生**的轻量知识库 + 长期记忆系统。与 Hy-Memory 相比，它开源可控且支持文档库；与 TencentDB Agent Memory 相比，它原生 MCP 化且更聚焦个人场景；与 agentmemory 相比，它支持中文文档库、一句话摘要召回和轻量关联。Shibei 是目前唯一同时覆盖“文档知识 + 对话记忆 + MCP + 纯本地 + 中文”的方案。
+> 对希望让 AI Agent 长期记住并使用个人知识的中文用户而言，Shibei 是一个**零外部依赖、纯本地、MCP 原生**的轻量知识库 + 长期记忆系统。与 Hy-Memory 相比，它开源可控且支持文档库；与 TencentDB Agent Memory 相比，它原生 MCP 化且更聚焦个人场景；与 agentmemory 相比，它支持中文文档库、BM25 全文召回和轻量关联。Shibei 是目前唯一同时覆盖“文档知识 + 对话记忆 + MCP + 纯本地 + 中文”的方案。
 
 ### 4.2 核心差异化
 
@@ -95,7 +95,7 @@ AI Agent 正在从“单次会话工具”演化为“长期协作助手”，�
 | **MCP 原生** | stdio MCP server，5 个工具 | Hy-Memory 是插件；TencentDB/agentmemory 无原生 MCP |
 | **文档知识库** | 完整支持 Markdown/Word/Excel 导入、分块、搜索 | 三者均不支持通用文档库 |
 | **对话记忆** | `shibei_remember` + SQLite + BM25 + 版本链 | Hy-Memory/TencentDB/agentmemory 均支持 |
-| **一句话摘要召回** | 默认开启 chunk 摘要，RRF 融合正文+摘要 | 多数竞品无 |
+| **BM25 双列索引** | 正文 + 摘要双列 FTS5 索引，可扩展摘要召回 | 多数竞品无 |
 | **轻量关联** | 标签共现、Markdown 链接、关键词共现，无需图数据库 | 多数竞品依赖向量或图谱 |
 | **Profile 多场景** | 面试/工作/日记等多知识库切换 | 多数无此概念 |
 | **Dreaming 自动整理** | 清理过期记忆、压缩旧短期记忆、合并相似 chunk | 竞品无 |
@@ -126,9 +126,9 @@ AI Agent 正在从“单次会话工具”演化为“长期协作助手”，�
 1. **错位竞争**：不做闭源插件，不做通用 Agent 平台，专注“个人中文文档知识库 + 对话记忆”
 2. **MCP-first**：竞品均不原生 MCP，这是 Shibei 最大壁垒
 3. **文档+记忆统一**：其他产品只做对话/行为记忆，Shibei 能把文档知识和对话记忆融合检索
-4. **摘要+关联增强召回**：一句话摘要召回和轻量关联提升搜索质量
+4. **关联增强召回**：轻量关联提升搜索质量
 5. **隐私优势**：纯本地，数据不上云，无 LLM API 也能用
-6. **中文优势**：BM25 中文分词 + 中文 Dreaming + 中文摘要
+6. **中文优势**：BM25 中文分词 + 中文 Dreaming
 
 ---
 
@@ -140,8 +140,8 @@ AI Agent 正在从“单次会话工具”演化为“长期协作助手”，�
 |------|------|--------|------|
 | 文档导入 | 多格式解析、增量导入、自动标签 | P0 | 已完成 |
 | 分块引擎 | 标题切分、句子边界、overlap、parent-child | P0 | 已完成 |
-| 一句话摘要 | 默认开启：每个 chunk 生成中文摘要，建摘要索引 | P0 | 已完成 |
-| 搜索引擎 | BM25 全文搜索，正文+摘要双索引 | P0 | 已完成 |
+| 搜索引擎 | BM25 全文搜索，正文+摘要双列 FTS5 索引 | P0 | 已完成 |
+| 摘要召回扩展 | 可配置 chunk 摘要生成，RRF 融合正文+摘要 | P2 | 待开发 |
 | 轻量关联 | 标签共现、Markdown 链接、关键词共现 | P1 | 已完成 |
 | Profile | 多场景配置切换 | P1 | 已完成 |
 | MCP Server | search / import / list_sources / dream / remember | P0 | 已完成 |
@@ -149,7 +149,7 @@ AI Agent 正在从“单次会话工具”演化为“长期协作助手”，�
 | Dreaming | 跨文档关联、洞察、自动整理（记忆清理/压缩/相似 chunk 合并） | P1 | 已完成 |
 | 去重压缩 | 精确去重、相似 chunk 合并 | P1 | 已完成 |
 | 一键安装 | `shibei init` 初始化配置和环境 | P1 | 已完成 |
-| 查询改写 | LLM 增强查询重写（规划中） | P2 | 待开发 |
+| 查询改写 | 基于规则/关键词映射的查询改写（规划中） | P2 | 待开发 |
 | Web/Notion 连接器 | 在线数据源导入（规划中） | P2 | 待开发 |
 
 ### 6.2 详细功能规格
@@ -175,8 +175,8 @@ AI Agent 正在从“单次会话工具”演化为“长期协作助手”，�
 
 - **BM25**：SQLite FTS5，中文 bigram + 可选 jieba
   - content_tokens：原始正文索引
-  - summary_tokens：一句话摘要索引
-  - 搜索时 RRF 融合正文和摘要结果
+  - summary_tokens：摘要索引（预留，当前为空；未来可扩展摘要召回）
+  - 搜索时 RRF 融合正文和摘要结果（摘要列当前为空，实际仅正文召回）
 - 支持标签过滤、limit 控制
 - 返回结果附带 `related` 相关推荐
 
@@ -187,7 +187,7 @@ AI Agent 正在从“单次会话工具”演化为“长期协作助手”，�
 | `shibei_search` | query, limit, tag | 排序结果列表（含 parent_text、related） |
 | `shibei_import` | dirs（可选）, full（可选） | 导入统计 |
 | `shibei_list_sources` | limit, offset | 文件列表 + 聚合摘要 |
-| `shibei_dream` | format（brief/full）, persist | 洞察报告 + 整理统计 |
+| `shibei_dream` | housekeeping（可选） | 洞察报告 + 整理统计 |
 | `shibei_remember` | fact, category, source, tags | 写入结果（含 memory_id） |
 
 #### 6.2.5 对话记忆
@@ -253,10 +253,10 @@ result = {
 - 跨文档连接：共享关键词的文档对
 - 主题模式：标签下高频主题
 - 洞察：全局高频主题、孤立文档
-- **自动整理**：
+- **自动整理**（零 LLM 依赖）：
   - 清理过期记忆
-  - 使用 LLM 判断记忆生命周期，仅压缩短期记忆，保留长期/个人记忆
-  - 基于 Overlap 系数聚类合并相似 chunk
+  - 识别可压缩记忆候选，由外部 Agent 决策是否压缩
+  - 基于 Overlap 系数聚类识别相似 chunk 候选；`shibei_consolidate --apply` 可直接启发式合并
 
 ### 6.3 非功能需求
 
@@ -349,7 +349,7 @@ chunk_id: str          # 唯一标识
 source: str            # 源文件路径
 tags: str              # 逗号分隔标签
 text: str              # chunk 文本（索引用）
-summary: str           # 一句话中文摘要（摘要索引用）
+summary: str           # 一句话中文摘要（摘要索引用，当前为空）
 parent_text: str        # 父 chunk 文本（返回上下文用）
 parent_id: str          # 父 chunk ID
 ```
@@ -396,12 +396,17 @@ shibei import [--full] [--dirs DIR1,DIR2]
 shibei search "query" [--tag TAG] [--limit N]
 
 # 列出来源
-shibei list-sources [--limit N] [--offset N]
+shibei list [--limit N] [--offset N]
+
+# 清理源文件已删除的 orphan chunks
+shibei clean [--dirs DIRS] [--dry-run]
 
 # Dreaming
-shibei dream run [--apply-consolidation]
-shibei dream clean [--days N]
-shibei dream history
+shibei dream [--no-housekeeping]
+
+# 合并相似 chunk
+shibei consolidate [--apply] [--threshold F] [--output FILE]
+shibei apply-consolidation clusters.json
 
 # 对话记忆
 shibei remember "用户在面试准备中重点关注 Redis 和 Kafka" --tags 面试,Redis
@@ -430,7 +435,7 @@ brain = Shibei("config.yaml")
 results = brain.search("银行风控", limit=5, tag="finance")
 brain.import_all(dirs=["~/Documents/notes"])
 sources = brain.list_sources(limit=20)
-insights = brain.dream(format="brief")
+insights = brain.dream()
 
 # 对话记忆
 brain.remember(
@@ -448,12 +453,12 @@ memories = brain.search_memories("面试准备")
 ### 10.1 已完成（v0.3.x）
 
 - [x] 多格式文档导入（md/txt/docx/xlsx/csv）
-- [x] BM25 全文搜索，正文+摘要双索引
+- [x] BM25 全文搜索，正文+摘要双列 FTS5 索引
 - [x] 增量导入 + 精确去重
 - [x] Profile 多场景切换
 - [x] MCP Server（5 个工具）
 - [x] 对话记忆 + 版本链 + BM25 召回
-- [x] 一句话摘要 + 正文/摘要双索引 RRF 融合
+- [ ] 一句话摘要 + 正文/摘要双索引 RRF 融合
 - [x] 轻量关联（标签共现、Markdown 链接、关键词共现）
 - [x] Dreaming 跨文档洞察 + 自动整理（记忆清理/压缩/相似 chunk 合并）
 - [x] 中文分词优化（jieba 可选）
@@ -468,8 +473,7 @@ memories = brain.search_memories("面试准备")
 
 ### 10.3 中期（v0.5.x）
 
-- [ ] LLM 增强 dreaming：让 LLM 生成自然语言洞察
-- [ ] 查询改写：口语查询 → 检索友好关键词
+- [ ] 查询改写：基于规则/关键词映射的口语查询改写
 - [ ] Web 页面连接器（URL 抓取）
 - [ ] Notion / Obsidian 连接器
 - [ ] HTTP API server（除 MCP 外）
@@ -477,7 +481,6 @@ memories = brain.search_memories("面试准备")
 ### 10.4 长期（v1.0+）
 
 - [ ] 个人 AI 记忆中枢：文档库 + 交互记忆 + 日程/邮件等多源数据统一
-- [ ] 本地小模型辅助：用本地 SLM 替代部分 LLM 功能
 - [ ] 插件生态：自定义 parser、connector、search strategy
 
 ---
@@ -502,9 +505,8 @@ memories = brain.search_memories("面试准备")
 
 | 风险 | 影响 | 缓解策略 |
 |------|------|---------|
-| 技术护城河浅 | 高 | 强化中文优化、Dreaming、摘要召回、轻量关联 |
+| 技术护城河浅 | 高 | 强化中文优化、Dreaming、轻量关联 |
 | 竞品快速跟进 | 中 | 聚焦个人场景，保持轻量 |
-| 摘要生成增加 LLM 成本 | 中 | 默认开启但可一键关闭；批量调用减少请求数 |
 | 用户增长慢 | 中 | 做好 MCP 接入文档，录制短视频教程 |
 | 大库性能下降 | 中 | 引入批量查询、索引优化、相似 chunk 合并 |
 
@@ -514,7 +516,6 @@ memories = brain.search_memories("面试准备")
 2. MCP 协议会在 2026-2027 年成为 Agent 集成的标准
 3. 中文用户对“无需 LLM API 即可搜索”的纯本地方案有需求
 4. 用户主要使用 Markdown/Word/Excel 等本地文档
-5. 用户愿意为更高召回质量接受导入阶段的 LLM 摘要成本
 
 ---
 
