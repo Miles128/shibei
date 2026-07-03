@@ -165,7 +165,7 @@ TOOLS = {
     },
     "shibei_consolidate": {
         "handler": _handle_consolidate,
-        "description": "整理知识库：发现内容高度重叠的 chunk 聚类。Shibei 自身不生成合并摘要也不自动写回数据库；如需应用合并，请用 shibei_apply_consolidation 传入外部 Agent 生成的摘要。",
+        "description": "整理知识库：发现内容高度重叠的 chunk 聚类。默认只返回候选；设置 apply=true 可直接用启发式摘要合并并写回数据库（零 LLM 依赖）。",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -184,12 +184,17 @@ TOOLS = {
                     "default": 500,
                     "description": "最大扫描 chunk 数",
                 },
+                "apply": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "true=直接应用启发式合并；false=只返回候选",
+                },
             },
         },
     },
     "shibei_apply_consolidation": {
         "handler": _handle_apply_consolidation,
-        "description": "根据外部 Agent（如 dreaming skill）提供的 cluster 摘要，直接删除原重叠 chunks 并把合并摘要写回知识库。零 LLM 依赖：摘要必须由调用方提前生成。",
+        "description": "根据外部 Agent 提供的 cluster 摘要，直接删除原重叠 chunks 并把合并摘要写回知识库。若 summary 为空，则自动使用启发式拼接摘要（零 LLM 依赖）。",
         "inputSchema": {
             "type": "object",
             "properties": {

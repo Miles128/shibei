@@ -111,9 +111,9 @@ def test_dream_housekeeping_identifies_similar_chunks():
         assert result["status"] == "ok"
         cons = result["housekeeping"]["consolidation"]
         assert cons.get("cluster_count", 0) >= 1
-        # 不自动 apply，summary 为空，由外部 Agent 生成
+        # 不自动 apply，但启发式摘要已生成，供外部 Agent 参考
         cluster = cons["clusters"][0]
-        assert cluster.get("summary") == ""
+        assert cluster.get("summary") != ""
 
 
 def test_dream_identifies_compressible_memories():

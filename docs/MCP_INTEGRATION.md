@@ -12,7 +12,7 @@ Shibei 通过 MCP (Model Context Protocol) stdio JSON-RPC 暴露工具，任何 
 | `shibei_dream` | `housekeeping` | 知识库 dreaming — 输出洞察与整理候选 |
 | `shibei_remember` | `fact` (必填), `category`, `tags` | 写入 Agent 对话记忆 |
 | `shibei_update_memory` | `memory_id` (必填), `fact` (必填), `tags` | 更新/压缩已有记忆 |
-| `shibei_consolidate` | `threshold` | 发现相似 chunk 聚类（零 LLM 依赖） |
+| `shibei_consolidate` | `threshold`, `min_cluster_size`, `max_chunks`, `apply` | 发现相似 chunk 聚类；`apply=true` 直接启发式合并 |
 | `shibei_apply_consolidation` | `clusters` | 根据外部 Agent 提供的摘要直接合并相似 chunk（零 LLM 依赖） |
 
 ## 接入 Hermes

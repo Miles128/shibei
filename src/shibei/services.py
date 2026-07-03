@@ -120,14 +120,16 @@ class Shibei:
         threshold: float = 0.6,
         min_cluster_size: int = 2,
         max_chunks: int = 500,
+        apply: bool = False,
     ) -> dict:
-        """整理知识库：发现相似 chunk 聚类（零 LLM 依赖）。"""
+        """整理知识库：发现相似 chunk 聚类，可选直接合并（零 LLM 依赖）。"""
         from .consolidator import consolidate
         return consolidate(
             self.config.db_path_expanded,
             threshold=threshold,
             min_cluster_size=min_cluster_size,
             max_chunks=max_chunks,
+            apply=apply,
         )
 
     def apply_consolidation(self, clusters: list[dict]) -> dict:

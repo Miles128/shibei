@@ -215,12 +215,13 @@ def cmd_dream(args):
 
 
 def cmd_consolidate(args):
-    """整理知识库：发现相似 chunk 候选"""
+    """整理知识库：发现相似 chunk 候选，可选直接合并"""
     brain = Shibei(args.resolved_config)
     result = brain.consolidate(
         threshold=args.threshold,
         min_cluster_size=args.min_size,
         max_chunks=args.max_chunks,
+        apply=args.apply,
     )
 
     if result["status"] == "empty":
@@ -230,11 +231,22 @@ def cmd_consolidate(args):
     print(f"🧹 整理完成")
     print(f"   共扫描 {result['total_chunks']} 个 chunks")
     print(f"   发现 {result['cluster_count']} 组相似内容")
+
+    if args.apply and "applied" in result:
+        applied = result["applied"]
+        if applied.get("applied"):
+            print(f"   已合并：删除 {applied['removed']} 条，插入 {applied['inserted']} 条")
+        elif applied.get("error"):
+            print(f"   ⚠️ 合并失败: {applied['error']}")
     print()
 
     for i, cluster in enumerate(result["clusters"], 1):
         print(f"--- 组 {i} ({cluster['size']} 条) ---")
         print(f"来源: {', '.join(cluster['sources'])}")
+        if cluster.get("summary"):
+            print("合并摘要:")
+            for line in cluster["summary"].split("\n")[:3]:
+                print(f"  • {line[:120]}")
         print("原始片段:")
         for c in cluster["chunks"][:3]:
             print(f"  • [{Path(c['source']).name}] {c['text'][:120]}...")
@@ -466,6 +478,8 @@ def main():
                                help="最大扫描 chunk 数（默认 500）")
     p_consolidate.add_argument("--output", default=None,
                                help="输出合并报告到 JSON 文件")
+    p_consolidate.add_argument("--apply", action="store_true",
+                               help="直接应用启发式合并（无需外部 Agent 提供摘要）")
 
     # apply-consolidation
     p_apply = sub.add_parser("apply-consolidation",

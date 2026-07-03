@@ -55,8 +55,32 @@ def test_consolidate_clusters(tmp_path):
     cluster = result["clusters"][0]
     assert cluster["size"] >= 2
     assert "a.md" in cluster["sources"] or "b.md" in cluster["sources"]
-    # 不自动生成摘要
-    assert cluster.get("summary") == ""
+    # 自动生成启发式摘要
+    assert cluster.get("summary") != ""
+
+
+def test_consolidate_apply_directly(tmp_path):
+    """consolidate --apply 直接合并，无需外部 Agent。"""
+    from shibei.consolidator import consolidate
+    from shibei.bm25 import BM25Index
+
+    db_path = tmp_path
+    bm25 = BM25Index(str(db_path / "fts5.db"))
+    bm25.add_batch([
+        ("a.md", "a.md", "ai", "Redis 持久化机制包括 RDB 和 AOF 两种方式"),
+        ("b.md", "b.md", "ai", "Redis 使用 RDB 和 AOF 做持久化存储"),
+        ("c.md", "c.md", "ai", "Python 是一门流行的编程语言"),
+    ])
+
+    result = consolidate(db_path, threshold=0.4, min_cluster_size=2, apply=True)
+
+    assert result["status"] == "ok"
+    assert result["cluster_count"] >= 1
+    assert "applied" in result
+    assert result["applied"]["applied"] is True
+    assert result["applied"]["removed"] >= 2
+    assert result["applied"]["inserted"] >= 1
+    assert bm25.count() <= 2
 
 
 def test_apply_consolidation_with_external_summary(tmp_path):
@@ -104,11 +128,10 @@ def test_apply_consolidation_skips_invalid_clusters(tmp_path):
 
     result = apply_consolidation(db_path, clusters=[
         {"rowids": [], "summary": "空 rowids"},
-        {"rowids": [1], "summary": ""},
         {"rowids": [1], "summary": "有效合并"},
     ])
 
     assert result["applied"] is True
-    assert result["invalid_clusters"] == 2
+    assert result["invalid_clusters"] == 1
     assert result["removed"] == 1
     assert result["inserted"] == 1

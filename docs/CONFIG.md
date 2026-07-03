@@ -72,6 +72,7 @@ shibei import --dirs ~/a,~/b   # 临时指定扫描目录
 shibei search "关键词" --limit 10 --tag ai
 shibei clean                   # 清理源文件已删除的 orphan chunks
 shibei clean --dry-run         # 只报告不删除
+shibei consolidate --apply     # 发现相似 chunk 并直接合并
 ```
 
 ## 环境变量汇总
