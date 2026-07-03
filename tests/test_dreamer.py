@@ -1,13 +1,12 @@
-"""Dreamer 模块测试 — 持久化与增量对比"""
+"""Dreamer 模块测试 — 洞察与 housekeeping"""
 
-import json
 import tempfile
 from pathlib import Path
 
 from shibei.dreamer import (
-    dream, save_dream, load_last_dream, list_dreams, _diff_dreams,
-    extract_keywords, find_cross_references,
-    compress_dreams, clean_old_dreams,
+    dream,
+    extract_keywords,
+    find_cross_references,
 )
 
 
@@ -52,177 +51,27 @@ def test_find_cross_references_basic():
 def test_dream_empty_db():
     """空库 dream 返回 empty 状态"""
     with tempfile.TemporaryDirectory() as tmpdir:
-        result = dream(Path(tmpdir), persist=False, compare=False)
+        result = dream(Path(tmpdir))
         assert result["status"] == "empty"
 
 
-def test_save_and_load_dream():
-    """dream 结果持久化与加载"""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = Path(tmpdir)
-        result = {
-            "status": "ok",
-            "timestamp": "2026-06-18T12:00:00",
-            "stats": {"total_chunks": 10, "unique_docs": 5,
-                      "cross_references": 2, "topics_with_connections": 3},
-            "cross_references": [],
-            "patterns": {"ai": ["大模型"]},
-            "insights": ["测试洞察"],
-        }
-        save_dream(db_path, result)
-
-        # 加载最近一次
-        loaded = load_last_dream(db_path)
-        assert loaded is not None
-        assert loaded["timestamp"] == "2026-06-18T12:00:00"
-        assert loaded["stats"]["total_chunks"] == 10
-
-
-def test_list_dreams():
-    """列出历史 dream 记录"""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = Path(tmpdir)
-        # 保存两次
-        save_dream(db_path, {
-            "status": "ok", "timestamp": "2026-06-17T10:00:00",
-            "stats": {"total_chunks": 5, "unique_docs": 3,
-                      "cross_references": 1, "topics_with_connections": 2},
-            "cross_references": [], "patterns": {}, "insights": [],
-        })
-        save_dream(db_path, {
-            "status": "ok", "timestamp": "2026-06-18T12:00:00",
-            "stats": {"total_chunks": 10, "unique_docs": 5,
-                      "cross_references": 2, "topics_with_connections": 3},
-            "cross_references": [], "patterns": {}, "insights": [],
-        })
-
-        dreams = list_dreams(db_path)
-        # latest.json 不算
-        assert len(dreams) == 2
-        # 倒序，最新的在前
-        assert dreams[0]["timestamp"] == "2026-06-18T12:00:00"
-
-
-def test_diff_dreams():
-    """两次 dream 结果对比"""
-    prev = {
-        "cross_references": [
-            {"doc_a": "a.md", "doc_b": "b.md", "shared_keywords": ["AI"], "strength": 1}
-        ],
-        "patterns": {"ai": ["大模型", "机器学习"]},
-        "insights": ["旧洞察"],
-        "stats": {"total_chunks": 10, "unique_docs": 5,
-                  "cross_references": 1, "topics_with_connections": 1},
-    }
-    curr = {
-        "cross_references": [
-            {"doc_a": "a.md", "doc_b": "b.md", "shared_keywords": ["AI"], "strength": 1},
-            {"doc_a": "c.md", "doc_b": "d.md", "shared_keywords": ["金融"], "strength": 1},
-        ],
-        "patterns": {"ai": ["大模型", "深度学习"]},
-        "insights": ["新洞察"],
-        "stats": {"total_chunks": 15, "unique_docs": 7,
-                  "cross_references": 2, "topics_with_connections": 2},
-    }
-    diff = _diff_dreams(prev, curr)
-
-    assert diff["stats_delta"]["chunks"] == 5
-    assert diff["stats_delta"]["docs"] == 2
-    assert diff["stats_delta"]["cross_refs"] == 1
-    assert "c.md ←→ d.md" in diff["new_connections"]
-    assert "深度学习" in diff["new_topics"][0]
-    assert "新洞察" in diff["new_insights"]
-    assert "机器学习" in diff["lost_topics"][0]
-
-
-def test_compress_dreams():
-    """压缩历史 dream：保留最近 N 次，更早的只存摘要"""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = Path(tmpdir)
-
-        # 创建 8 条 dream 记录
-        for i in range(8):
-            save_dream(db_path, {
-                "status": "ok",
-                "timestamp": f"2026-06-{10+i:02d}T10:00:00",
-                "stats": {"total_chunks": 10 + i, "unique_docs": 5,
-                          "cross_references": 2, "topics_with_connections": 3},
-                "cross_references": [{"doc_a": "a.md", "doc_b": "b.md",
-                                      "shared_keywords": ["AI"], "strength": 1}],
-                "patterns": {"ai": ["大模型"]},
-                "insights": [f"洞察 {i}"],
-            })
-
-        # 压缩，保留最近 3 条
-        result = compress_dreams(db_path, keep_recent=3)
-        assert result["total"] == 8
-        assert result["kept_full"] == 3
-        assert result["compressed"] == 5
-
-        # 检查：最近 3 条保持完整，更早的 5 条被压缩
-        dreams = list_dreams(db_path)
-        # list_dreams 返回摘要信息，compressed 字段应标记
-        compressed_count = sum(1 for d in dreams if d.get("compressed"))
-        assert compressed_count == 5
-
-
-def test_clean_old_dreams():
-    """清理超过 N 天的 dream 记录"""
-    import os
-    import time
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = Path(tmpdir)
-        dreams_dir = db_path / "dreams"
-        dreams_dir.mkdir(parents=True)
-
-        # 创建一个旧文件（修改时间为 100 天前）
-        old_file = dreams_dir / "old.json"
-        old_file.write_text('{"timestamp": "old"}')
-        old_time = time.time() - 100 * 86400  # 100 天前
-        os.utime(old_file, (old_time, old_time))
-
-        # 创建一个新文件
-        new_file = dreams_dir / "new.json"
-        new_file.write_text('{"timestamp": "new"}')
-
-        # 清理 90 天前的
-        result = clean_old_dreams(db_path, max_age_days=90)
-        assert result["deleted"] == 1
-        assert result["remaining"] == 1
-        assert not old_file.exists()
-        assert new_file.exists()
-
-
-def test_dream_brief_format():
-    """dream brief 格式只返回精简内容（用 BM25 构造真实 chunk）"""
+def test_dream_basic():
+    """dream 返回完整洞察结果"""
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = Path(tmpdir)
         from shibei.bm25 import BM25Index
         bm25 = BM25Index(str(db_path / "fts5.db"))
-        # 两个文档共享 "人工智能" 关键词，保证有 cross_references
         bm25.add_batch([
             ("/a.md", "/a.md", "ai", "人工智能正在改变世界。大模型技术突破。", "", ""),
             ("/b.md", "/b.md", "ai", "人工智能应用广泛。大模型是核心。", "", ""),
         ])
 
-        from shibei.dreamer import dream
-        # full 格式
-        full = dream(db_path, format="full",
-                     persist=False, compare=False)
-        assert full["status"] == "ok"
-        assert "cross_references" in full
-        assert "patterns" in full
-        assert "insights" in full
-
-        # brief 格式
-        brief = dream(db_path, format="brief",
-                      persist=False, compare=False)
-        assert brief["status"] == "ok"
-        assert "stats" in brief
-        assert "insights" in brief
-        assert "cross_references" not in brief
-        assert "patterns" not in brief
+        result = dream(db_path)
+        assert result["status"] == "ok"
+        assert "cross_references" in result
+        assert "patterns" in result
+        assert "insights" in result
+        assert "stats" in result
 
 
 def test_dream_housekeeping_default_runs():
@@ -236,8 +85,7 @@ def test_dream_housekeeping_default_runs():
             ("/b.md", "/b.md", "ai", "大模型技术突破。", "", ""),
         ])
 
-        result = dream(db_path, format="full",
-                       persist=False, compare=False)
+        result = dream(db_path)
         assert result["status"] == "ok"
         assert "housekeeping" in result
         assert result["housekeeping"]["enabled"] is True
@@ -256,9 +104,10 @@ def test_dream_housekeeping_identifies_similar_chunks():
             ("/b.md", "/b.md", "ai", "Redis 使用 RDB 和 AOF 做持久化存储", "", ""),
         ])
 
-        result = dream(db_path, format="full",
-                       persist=False, compare=False,
-                       housekeeping={"consolidate_threshold": 0.3})
+        result = dream(
+            db_path,
+            housekeeping={"consolidate_threshold": 0.3},
+        )
         assert result["status"] == "ok"
         cons = result["housekeeping"]["consolidation"]
         assert cons.get("cluster_count", 0) >= 1
@@ -288,12 +137,10 @@ def test_dream_identifies_compressible_memories():
         store.add("长期项目目标", category="user", created_at=old, supersede_threshold=2.0)
 
         result = dream(
-            db_path, format="full", persist=False, compare=False,
+            db_path,
             housekeeping={"compress_keep_recent": 0},
         )
         assert result["status"] == "ok"
         mem = result["housekeeping"]["memory"]
         assert mem["compressible_count"] == 3
         assert len(mem["compressible_candidates"]) == 3
-
-

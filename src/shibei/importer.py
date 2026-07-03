@@ -178,6 +178,55 @@ class Importer:
             bm25.add_batch(chunks_data)
 
 
+def clean_orphans(
+    cfg: Config,
+    dirs: 'list[str] | None' = None,
+    dry_run: bool = False,
+) -> dict:
+    """清理源文件已删除但数据库中仍残留的 orphan chunks。
+
+    Args:
+        cfg: 配置
+        dirs: 要扫描的目录。None 则用 config 中的 sources。
+        dry_run: True 只报告不删除
+
+    Returns:
+        {"orphans": [file_path, ...], "removed": int, "dry_run": bool}
+    """
+    scan_dirs = dirs or cfg.sources
+    extensions = set(cfg.extensions)
+    ignore_dirs = {str(item).strip() for item in cfg.ignore_dirs if str(item).strip()}
+
+    files = []
+    for d in scan_dirs:
+        p = Path(d).expanduser()
+        if p.exists():
+            for ext in extensions:
+                candidates = p.rglob(f"*{ext}")
+                files.extend(
+                    f for f in candidates if not _path_under_ignored_dir(f, ignore_dirs)
+                )
+
+    current_files = {str(f) for f in files}
+    manifest = Manifest(cfg.db_path_expanded)
+    known_paths = manifest.all_paths()
+    orphans = sorted(known_paths - current_files)
+
+    if not orphans:
+        return {"orphans": [], "removed": 0, "dry_run": dry_run}
+
+    if not dry_run:
+        from .bm25 import BM25Index
+        db_path = cfg.db_path_expanded / "fts5.db"
+        bm25 = BM25Index(str(db_path))
+        bm25.remove_sources(orphans)
+        for fp in orphans:
+            manifest.remove(fp)
+        manifest.save()
+
+    return {"orphans": orphans, "removed": len(orphans), "dry_run": dry_run}
+
+
 def list_sources(config: Config, limit: int = 0, offset: int = 0) -> dict:
     """列出已入库的文件来源。
 

@@ -144,6 +144,24 @@ def cmd_list(args):
         print(f"  {s}")
 
 
+def cmd_clean(args):
+    """清理源文件已删除的 orphan chunks"""
+    brain = Shibei(args.resolved_config)
+    dirs = args.dirs.split(",") if args.dirs else None
+    result = brain.clean_orphans(dirs=dirs, dry_run=args.dry_run)
+
+    prefix = "[dry-run] " if args.dry_run else ""
+    if result["removed"] == 0:
+        print(f"{prefix}没有 orphan chunks")
+        return
+
+    print(f"{prefix}发现 {result['removed']} 个 orphan chunks：")
+    for fp in result["orphans"]:
+        print(f"  {fp}")
+    if not args.dry_run:
+        print("已删除")
+
+
 def cmd_dream(args):
     """执行 dreaming — 默认行为"""
     brain = Shibei(args.resolved_config)
@@ -194,94 +212,6 @@ def cmd_dream(args):
             print(f"  相似 chunk 聚类: {cons.get('cluster_count', 0)} 组")
         if mem.get("error") or cons.get("error"):
             print(f"  部分整理失败，详见日志")
-
-    # 增量对比
-    diff = result.get("diff")
-    if diff and "message" not in diff:
-        print()
-        print("📈 增量变化（vs 上次 dream）：")
-        delta = diff.get("stats_delta", {})
-        delta_parts = []
-        for k, v in delta.items():
-            sign = "+" if v > 0 else ""
-            delta_parts.append(f"{k} {sign}{v}")
-        if delta_parts:
-            print(f"  统计：{', '.join(delta_parts)}")
-        if diff.get("new_connections"):
-            print(f"  🆕 新增连接：{', '.join(diff['new_connections'][:3])}")
-        if diff.get("lost_connections"):
-            print(f"  ❌ 消失连接：{', '.join(diff['lost_connections'][:3])}")
-        if diff.get("new_topics"):
-            print(f"  🆕 新增主题：{', '.join(diff['new_topics'][:3])}")
-        if diff.get("new_insights"):
-            print(f"  🆕 新洞察：{diff['new_insights'][0]}")
-
-
-def cmd_dream_compress(args):
-    """压缩历史 dream 记录"""
-    from .config import load_config
-    from .dreamer import compress_dreams
-
-    cfg = load_config(args.resolved_config)
-    result = compress_dreams(cfg.db_path_expanded, keep_recent=args.keep)
-    print(f"📦 Dream 历史压缩完成")
-    print(f"   总记录: {result['total']}")
-    print(f"   保留完整: {result['kept_full']}")
-    print(f"   压缩为摘要: {result['compressed']}")
-
-
-def cmd_dream_clean(args):
-    """清理旧 dream 记录"""
-    from .config import load_config
-    from .dreamer import clean_old_dreams
-
-    cfg = load_config(args.resolved_config)
-    result = clean_old_dreams(cfg.db_path_expanded, max_age_days=args.days)
-    print(f"🧹 Dream 历史清理完成")
-    print(f"   删除: {result['deleted']} 条（超过 {args.days} 天）")
-    print(f"   剩余: {result['remaining']} 条")
-
-
-def cmd_dream_history(args):
-    """查看 dream 历史"""
-    from .config import load_config
-    from .dreamer import list_dreams
-
-    cfg = load_config(args.resolved_config)
-    dreams = list_dreams(cfg.db_path_expanded)
-    if not dreams:
-        print("暂无 dream 历史，运行 shibei dream run")
-        return
-    print(f"Dream 历史（{len(dreams)} 条）：")
-    for d in dreams:
-        stats = d.get("stats", {})
-        ts = d.get("timestamp", "unknown")
-        chunks = stats.get("total_chunks", "?")
-        refs = stats.get("cross_references", "?")
-        compressed = " (compressed)" if d.get("compressed") else ""
-        print(f"  {ts}  chunks={chunks}, refs={refs}{compressed}  [{d['file']}]")
-
-
-def cmd_dream_diff(args):
-    """查看与上次 dream 的对比"""
-    from .config import load_config
-    from .dreamer import load_last_dream
-
-    cfg = load_config(args.resolved_config)
-    last = load_last_dream(cfg.db_path_expanded)
-    if not last:
-        print("无历史 dream 记录，先运行 shibei dream run")
-        return
-
-    print(f"上次 dream: {last.get('timestamp', 'unknown')}")
-    stats = last.get("stats", {})
-    print(f"  chunks: {stats.get('total_chunks', '?')}")
-    print(f"  docs: {stats.get('unique_docs', '?')}")
-    print(f"  cross_refs: {stats.get('cross_references', '?')}")
-    if last.get("insights"):
-        print("\n洞察：")
-        for ins in last["insights"][:5]:
-            print(f"  • {ins}")
 
 
 def cmd_consolidate(args):
@@ -481,6 +411,13 @@ def main():
     # list
     sub.add_parser("list", help="列出已入库文件")
 
+    # clean
+    p_clean = sub.add_parser("clean", help="清理源文件已删除的 orphan chunks")
+    p_clean.add_argument("--dirs", default=None,
+                         help="逗号分隔的扫描目录（默认用配置中的 sources）")
+    p_clean.add_argument("--dry-run", action="store_true",
+                         help="只报告不删除")
+
     # remember
     p_remember = sub.add_parser("remember", help="写入一条 Agent 对话记忆")
     p_remember.add_argument("fact", help="要记忆的事实")
@@ -535,24 +472,10 @@ def main():
                              help="根据外部摘要直接合并相似 chunk（MCP: shibei_apply_consolidation）")
     p_apply.add_argument("input", help="包含 clusters 的 JSON 文件路径")
 
-    # dream（子命令组）
+    # dream
     p_dream = sub.add_parser("dream", help="知识库 dreaming — 发现隐藏连接与洞察")
-    p_dream_sub = p_dream.add_subparsers(dest="dream_cmd")
-
-    p_dream_run = p_dream_sub.add_parser("run", help="执行 dreaming（默认）")
-    p_dream_run.add_argument("--no-housekeeping", action="store_true",
-                             help="禁用整理（记忆清理/候选识别）")
-
-    p_dream_compress = p_dream_sub.add_parser("compress", help="压缩历史 dream 记录")
-    p_dream_compress.add_argument("--keep", type=int, default=5,
-                                  help="保留最近 N 次完整记录（默认 5）")
-
-    p_dream_clean = p_dream_sub.add_parser("clean", help="清理旧 dream 记录")
-    p_dream_clean.add_argument("--days", type=int, default=90,
-                               help="删除超过 N 天的记录（默认 90）")
-
-    p_dream_sub.add_parser("history", help="查看 dream 历史")
-    p_dream_sub.add_parser("diff", help="查看与上次 dream 的对比")
+    p_dream.add_argument("--no-housekeeping", action="store_true",
+                         help="禁用整理（记忆清理/候选识别）")
 
     # profile
     p_profile = sub.add_parser("profile", help="管理配置 profile")
@@ -611,15 +534,7 @@ def main():
 
     # Core commands
     if args.cmd == "dream":
-        # dream 子命令组
-        dream_cmd = getattr(args, "dream_cmd", None) or "run"
-        {
-            "run": cmd_dream,
-            "compress": cmd_dream_compress,
-            "clean": cmd_dream_clean,
-            "history": cmd_dream_history,
-            "diff": cmd_dream_diff,
-        }.get(dream_cmd, cmd_dream)(args)
+        cmd_dream(args)
         return
 
     {
@@ -627,6 +542,7 @@ def main():
         "search": cmd_search,
         "import": cmd_import,
         "list": cmd_list,
+        "clean": cmd_clean,
         "remember": cmd_remember,
         "update-memory": cmd_update_memory,
         "consolidate": cmd_consolidate,

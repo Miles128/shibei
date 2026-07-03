@@ -18,8 +18,8 @@ def test_load_custom_config():
     assert len(cfg.tagging.rules) >= 4
 
 
-def test_tagger():
-    """标签推断"""
+def test_tagger_regex():
+    """regex 标签推断（兼容旧配置）"""
     from shibei.tagger import Tagger
     from shibei.config import TaggingConfig, TagRule
 
@@ -35,3 +35,20 @@ def test_tagger():
     assert "interview" in tags
     assert "ai" in tags
     assert "misc" in tags
+
+
+def test_tagger_path_rules():
+    """路径 glob 标签推断"""
+    from shibei.tagger import Tagger
+    from shibei.config import TaggingConfig, PathTagRule
+
+    cfg = TaggingConfig(path_rules=[
+        PathTagRule(pattern="面试/HSBC/*.md", tags="interview,hsbc"),
+        PathTagRule(pattern="面试/*.md", tags="interview"),
+    ])
+    tagger = Tagger(cfg)
+
+    from pathlib import Path
+    assert tagger.infer(Path("/notes/面试/HSBC/prep.md")) == ["interview", "hsbc"]
+    assert tagger.infer(Path("/notes/面试/algo.md")) == ["interview"]
+    assert tagger.infer(Path("/notes/other.md")) == []

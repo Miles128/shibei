@@ -9,10 +9,10 @@ Shibei 通过 MCP (Model Context Protocol) stdio JSON-RPC 暴露工具，任何 
 | `shibei_search` | `query` (必填), `limit`, `tag` | BM25 搜索 |
 | `shibei_import` | `dirs` (可选), `full` (可选) | 导入/重建知识库 |
 | `shibei_list_sources` | 无 | 列出已入库文件 |
-| `shibei_dream` | `format`, `persist`, `housekeeping` | 知识库 dreaming — 以 skill 形式输出洞察与整理建议 |
+| `shibei_dream` | `housekeeping` | 知识库 dreaming — 输出洞察与整理候选 |
 | `shibei_remember` | `fact` (必填), `category`, `tags` | 写入 Agent 对话记忆 |
 | `shibei_update_memory` | `memory_id` (必填), `fact` (必填), `tags` | 更新/压缩已有记忆 |
-| `shibei_consolidate` | `threshold`, `apply` | 发现/合并相似 chunk（需 Shibei 自身 LLM 生成摘要） |
+| `shibei_consolidate` | `threshold` | 发现相似 chunk 聚类（零 LLM 依赖） |
 | `shibei_apply_consolidation` | `clusters` | 根据外部 Agent 提供的摘要直接合并相似 chunk（零 LLM 依赖） |
 
 ## 接入 Hermes
@@ -94,9 +94,9 @@ shibei.server
   ├─ shibei_list_sources()     → 列出已入库文件
   ├─ shibei_remember(fact)     → 写入长期记忆
   ├─ shibei_update_memory(...) → 更新/压缩已有记忆
-  ├─ shibei_consolidate()         → 发现/合并相似 chunk（需 Shibei 自身 LLM）
-  ├─ shibei_apply_consolidation() → 根据外部摘要直接合并相似 chunk
-  └─ shibei_dream()               → 洞察 + 整理建议（skill 形式，零 LLM 依赖）
+  ├─ shibei_consolidate()         → 发现相似 chunk 聚类（零 LLM 依赖）
+├─ shibei_apply_consolidation() → 根据外部摘要直接合并相似 chunk
+└─ shibei_dream()               → 洞察 + 整理候选（零 LLM 依赖）
 ```
 
 ## Dreaming 工作流

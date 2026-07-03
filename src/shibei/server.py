@@ -56,8 +56,6 @@ def _handle_list_sources(brain, args):
 
 def _handle_dream(brain, args):
     return brain.dream(
-        format=args.get("format", "brief"),
-        persist=args.get("persist", True),
         housekeeping=args.get("housekeeping"),
     )
 
@@ -153,21 +151,10 @@ TOOLS = {
     },
     "shibei_dream": {
         "handler": _handle_dream,
-        "description": "知识库 dreaming — 发现隐藏连接、跨文档关联、主题模式，并执行零 LLM 依赖的整理：清理过期记忆、识别可压缩记忆候选、发现相似 chunk 候选。Shibei 自身不调用 LLM；具体压缩/合并由外部 Agent 判断并调用 shibei_update_memory / shibei_apply_consolidation 执行。默认精简输出（stats+insights+housekeeping统计），需要完整 cross_references 时用 full 格式。",
+        "description": "知识库 dreaming — 发现隐藏连接、跨文档关联、主题模式，并执行零 LLM 依赖的整理：清理过期记忆、识别可压缩记忆候选、发现相似 chunk 候选。Shibei 自身不调用 LLM；具体压缩/合并由外部 Agent 判断并调用 shibei_update_memory / shibei_apply_consolidation 执行。",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "format": {
-                    "type": "string",
-                    "enum": ["brief", "full"],
-                    "default": "brief",
-                    "description": "brief=精简（推荐 MCP，只返回 stats+insights+housekeeping统计，省 token）；full=完整（返回 cross_references + patterns + 详细 clusters）",
-                },
-                "persist": {
-                    "type": "boolean",
-                    "default": True,
-                    "description": "是否持久化结果，用于后续 diff 对比",
-                },
                 "housekeeping": {
                     "type": ["boolean", "object"],
                     "default": True,

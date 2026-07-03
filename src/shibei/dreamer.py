@@ -12,7 +12,6 @@
 """
 
 import re
-import json
 import logging
 import sqlite3
 from datetime import datetime
@@ -304,24 +303,15 @@ def _run_housekeeping(
 
 
 def dream(db_path: Path,
-          persist: bool = True, compare: bool = True,
-          format: str = "full",
           housekeeping: Optional[dict] = None) -> dict:
-    """执行 dreaming — 知识库自主思考 + 整理候选发现。
+    """执行 dreaming — 知识库洞察 + 整理候选发现（零 LLM 依赖）。
 
-    dreaming 默认执行（零 LLM 依赖）：
+    dreaming 默认执行：
       - 清理过期记忆
       - 识别可能需要压缩的旧记忆候选
       - 识别相似的 chunk 候选
 
     具体压缩/合并由外部 Agent 判断并执行；Shibei 自身不调用 LLM。
-
-    Args:
-        db_path: 数据存储根路径
-        persist: 是否持久化结果到 ~/.shibei/dreams/
-        compare: 是否与上次 dream 结果对比，输出增量变化
-        format: 输出格式 "full" 完整 / "brief" 精简（MCP 默认用 brief）
-        housekeeping: 控制整理行为；传 False 禁用，传 dict 覆盖默认配置
     """
     chunks = load_chunks(db_path)
 
@@ -332,13 +322,12 @@ def dream(db_path: Path,
     patterns = find_patterns(chunks)
     insights = generate_insights(chunks, cross_refs, patterns)
 
-    # 整理（housekeeping）：识别候选
     hk_result = _run_housekeeping(
         db_path,
         housekeeping=housekeeping,
     )
 
-    result = {
+    return {
         "status": "ok",
         "timestamp": datetime.now().isoformat(timespec="seconds"),
         "stats": {
@@ -354,231 +343,3 @@ def dream(db_path: Path,
         "insights": insights,
         "housekeeping": hk_result,
     }
-
-    # 增量对比：与上次 dream 结果比较
-    if compare:
-        prev = load_last_dream(db_path)
-        if prev:
-            result["diff"] = _diff_dreams(prev, result)
-        else:
-            result["diff"] = {"message": "首次 dream，无历史对比"}
-
-    # 精简模式：只保留关键信息，大幅减少 token 占用
-    if format == "brief":
-        brief_result = {
-            "status": "ok",
-            "timestamp": result["timestamp"],
-            "stats": result["stats"],
-            "insights": insights,
-        }
-        if "diff" in result:
-            brief_result["diff"] = {
-                "stats_delta": result["diff"].get("stats_delta", {}),
-                "new_insights": result["diff"].get("new_insights", []),
-            }
-        # housekeeping 摘要：保留统计，去掉详细 clusters
-        hk = result.get("housekeeping", {})
-        if hk.get("enabled"):
-            brief_hk = {
-                "enabled": True,
-                "memory": hk.get("memory", {}),
-                "consolidation": {
-                    k: v for k, v in hk.get("consolidation", {}).items()
-                    if k != "clusters"
-                },
-            }
-            brief_result["housekeeping"] = brief_hk
-        # 如果 MCP 直接调 brief，不持久化完整数据会丢失历史，所以先 save full 再返回 brief
-        if persist:
-            save_dream(db_path, result)
-        return brief_result
-
-    # 持久化
-    if persist:
-        save_dream(db_path, result)
-
-    return result
-
-
-# === Dream 持久化 ===
-
-DREAMS_DIR_NAME = "dreams"
-
-
-def _dreams_dir(db_path: Path) -> Path:
-    """dream 结果存储目录：<db_path>/dreams/"""
-    d = db_path / DREAMS_DIR_NAME
-    d.mkdir(parents=True, exist_ok=True)
-    return d
-
-
-def save_dream(db_path: Path, result: dict) -> Path:
-    """保存 dream 结果到 <db_path>/dreams/<timestamp>.json
-
-    同时维护 latest.json 软链接（实际是复制，避免跨平台软链问题）。
-    """
-    ts = result.get("timestamp") or datetime.now().strftime("%Y%m%dT%H%M%S")
-    # 文件名安全化：替换冒号
-    safe_ts = ts.replace(":", "").replace("-", "")
-    filename = f"{safe_ts}.json"
-    target = _dreams_dir(db_path) / filename
-    with open(target, "w") as f:
-        json.dump(result, f, ensure_ascii=False, indent=2)
-
-    # 更新 latest.json
-    latest = _dreams_dir(db_path) / "latest.json"
-    with open(latest, "w") as f:
-        json.dump(result, f, ensure_ascii=False, indent=2)
-
-    return target
-
-
-def load_last_dream(db_path: Path) -> 'dict | None':
-    """加载最近一次 dream 结果（不含当前）。"""
-    latest = _dreams_dir(db_path) / "latest.json"
-    if not latest.exists():
-        return None
-    try:
-        with open(latest) as f:
-            return json.load(f)
-    except (json.JSONDecodeError, OSError):
-        return None
-
-
-def list_dreams(db_path: Path, limit: int = 20) -> list[dict]:
-    """列出历史 dream 记录（按时间倒序）。"""
-    d = _dreams_dir(db_path)
-    files = sorted(
-        [f for f in d.glob("*.json") if f.name != "latest.json"],
-        reverse=True,
-    )[:limit]
-    results = []
-    for f in files:
-        try:
-            with open(f) as fp:
-                data = json.load(fp)
-                results.append({
-                    "file": f.name,
-                    "timestamp": data.get("timestamp", ""),
-                    "stats": data.get("stats", {}),
-                    "compressed": data.get("compressed", False),
-                })
-        except (json.JSONDecodeError, OSError):
-            continue
-    return results
-
-
-def _diff_dreams(prev: dict, curr: dict) -> dict:
-    """对比两次 dream 结果，输出增量变化。"""
-    prev_refs = {(r["doc_a"], r["doc_b"]) for r in prev.get("cross_references", [])}
-    curr_refs = {(r["doc_a"], r["doc_b"]) for r in curr.get("cross_references", [])}
-
-    prev_patterns = set()
-    for tag, kws in prev.get("patterns", {}).items():
-        for kw in kws:
-            prev_patterns.add((tag, kw))
-    curr_patterns = set()
-    for tag, kws in curr.get("patterns", {}).items():
-        for kw in kws:
-            curr_patterns.add((tag, kw))
-
-    prev_insights = set(prev.get("insights", []))
-    curr_insights = set(curr.get("insights", []))
-
-    return {
-        "new_connections": [
-            f"{a} ←→ {b}" for a, b in sorted(curr_refs - prev_refs)
-        ][:5],
-        "lost_connections": [
-            f"{a} ←→ {b}" for a, b in sorted(prev_refs - curr_refs)
-        ][:5],
-        "new_topics": [f"[{t}] {k}" for t, k in sorted(curr_patterns - prev_patterns)][:5],
-        "lost_topics": [f"[{t}] {k}" for t, k in sorted(prev_patterns - curr_patterns)][:5],
-        "new_insights": sorted(curr_insights - prev_insights),
-        "stats_delta": {
-            "chunks": curr["stats"]["total_chunks"] - prev["stats"]["total_chunks"],
-            "docs": curr["stats"]["unique_docs"] - prev["stats"]["unique_docs"],
-            "cross_refs": curr["stats"]["cross_references"] - prev["stats"]["cross_references"],
-        },
-    }
-
-
-def compress_dreams(db_path: Path, keep_recent: int = 5) -> dict:
-    """压缩历史 dream 记录：保留最近 N 次全量，更早的只存摘要。
-
-    策略：
-      - 最近 keep_recent 次：保留完整 JSON（含 cross_references/patterns/insights）
-      - 更早的：只保留 timestamp + stats + compressed 标记，删除大字段
-      - latest.json 始终保留全量
-
-    Args:
-        db_path: 数据存储根路径
-        keep_recent: 保留最近 N 次完整记录
-
-    Returns:
-        {"compressed": N, "kept_full": M, "total": T}
-    """
-    dreams_dir = _dreams_dir(db_path)
-    files = sorted(
-        [f for f in dreams_dir.glob("*.json") if f.name != "latest.json"],
-        reverse=True,  # 新到旧
-    )
-
-    total = len(files)
-    compressed = 0
-
-    for i, f in enumerate(files):
-        if i < keep_recent:
-            continue  # 保留最近 N 次完整
-        # 旧文件：只保留 timestamp + stats
-        try:
-            with open(f) as fp:
-                data = json.load(fp)
-            slim = {
-                "timestamp": data.get("timestamp", ""),
-                "stats": data.get("stats", {}),
-                "compressed": True,
-                "compressed_at": datetime.now().isoformat(timespec="seconds"),
-            }
-            with open(f, "w") as fp:
-                json.dump(slim, fp, ensure_ascii=False)
-            compressed += 1
-        except (json.JSONDecodeError, OSError):
-            continue
-
-    return {
-        "compressed": compressed,
-        "kept_full": min(keep_recent, total),
-        "total": total,
-    }
-
-
-def clean_old_dreams(db_path: Path, max_age_days: int = 90) -> dict:
-    """清理超过 N 天的 dream 记录（含已压缩的）。
-
-    Args:
-        db_path: 数据存储根路径
-        max_age_days: 最大保留天数
-
-    Returns:
-        {"deleted": N, "remaining": M}
-    """
-    import time
-    dreams_dir = _dreams_dir(db_path)
-    files = [f for f in dreams_dir.glob("*.json") if f.name != "latest.json"]
-
-    now = time.time()
-    cutoff = now - max_age_days * 86400
-    deleted = 0
-
-    for f in files:
-        try:
-            mtime = f.stat().st_mtime
-            if mtime < cutoff:
-                f.unlink()
-                deleted += 1
-        except OSError:
-            continue
-
-    remaining = len([f for f in dreams_dir.glob("*.json") if f.name != "latest.json"])
-    return {"deleted": deleted, "remaining": remaining}

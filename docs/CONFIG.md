@@ -40,27 +40,38 @@ chunking:
 
 ## tagging
 
-标签推断规则。按顺序匹配，检查文件路径 + 内容前 500 字。
+标签推断支持两种规则，按顺序匹配：
+
+1. **路径规则（推荐）**：按目录结构打标签，零维护、最稳定。
+2. **regex 规则（兼容）**：检查文件路径 + 内容前 500 字。
 
 ```yaml
 tagging:
+  path_rules:
+    - pattern: "面试/HSBC/*.md"   # 支持 source-root-relative glob
+      tags: "interview,hsbc"
+    - pattern: "面试/*.md"
+      tags: "interview"
   rules:
-    - pattern: "(面试|复盘|interview)"
-      tag: interview
     - pattern: "(AI|人工智能|大模型)"
       tag: ai
     - pattern: ".*"              # 兜底规则
       tag: personal-note
 ```
 
-`pattern` 是 Python 正则（大小写不敏感）。
+路径规则 `pattern` 为 glob，会匹配路径的任意后缀（如 `面试/HSBC/*.md` 可匹配 `/notes/面试/HSBC/prep.md` 中的 `面试/HSBC/prep.md`）。`tags` 为逗号分隔的多个标签。
+
+regex 规则的 `pattern` 是 Python 正则（大小写不敏感）。
 
 ## CLI 参数
 
 ```bash
 shibei import                  # 增量导入（跳过未变更文件）
 shibei import --full           # 全量重建（忽略 manifest 缓存）
+shibei import --dirs ~/a,~/b   # 临时指定扫描目录
 shibei search "关键词" --limit 10 --tag ai
+shibei clean                   # 清理源文件已删除的 orphan chunks
+shibei clean --dry-run         # 只报告不删除
 ```
 
 ## 环境变量汇总

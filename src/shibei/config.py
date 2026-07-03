@@ -31,8 +31,15 @@ class TagRule:
 
 
 @dataclass
+class PathTagRule:
+    pattern: str = ""      # glob 路径模式，如 "面试/HSBC/*.md"
+    tags: str = ""         # 逗号分隔的标签，如 "interview,hsbc"
+
+
+@dataclass
 class TaggingConfig:
     rules: list[TagRule] = field(default_factory=list)
+    path_rules: list[PathTagRule] = field(default_factory=list)
 
 
 DEFAULT_IGNORE_DIRS = (
@@ -110,7 +117,10 @@ def load_config(path: str = "config.yaml") -> Config:
         cfg.chunking = ChunkingConfig(**raw["chunking"])
 
     # Tagging
-    if "tagging" in raw and "rules" in raw["tagging"]:
-        cfg.tagging.rules = [TagRule(**r) for r in raw["tagging"]["rules"]]
+    if "tagging" in raw:
+        if "rules" in raw["tagging"]:
+            cfg.tagging.rules = [TagRule(**r) for r in raw["tagging"]["rules"]]
+        if "path_rules" in raw["tagging"]:
+            cfg.tagging.path_rules = [PathTagRule(**r) for r in raw["tagging"]["path_rules"]]
 
     return cfg

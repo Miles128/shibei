@@ -42,17 +42,21 @@ class Shibei:
         from .importer import list_sources
         return list_sources(self.config, limit=limit, offset=offset)
 
+    def clean_orphans(
+        self,
+        dirs: 'list[str] | None' = None,
+        dry_run: bool = False,
+    ) -> dict:
+        from .importer import clean_orphans
+        return clean_orphans(self.config, dirs=dirs, dry_run=dry_run)
+
     def dream(
         self,
-        format: str = "full",
-        persist: bool = True,
         housekeeping: 'dict | None' = None,
     ) -> dict:
         from .dreamer import dream
         return dream(
             self.config.db_path_expanded,
-            format=format,
-            persist=persist,
             housekeeping=housekeeping,
         )
 
