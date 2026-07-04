@@ -47,13 +47,13 @@ class Importer:
         scan_dirs = dirs or self.cfg.sources
         extensions = set(self.cfg.extensions)
         ignore_dirs = {str(item).strip() for item in self.cfg.ignore_dirs if str(item).strip()}
-        files = []
+        files: list[Path] = []
         warnings: list[str] = []
         for d in scan_dirs:
             p = Path(d).expanduser()
             if p.exists():
                 for ext in extensions:
-                    candidates = p.rglob(f"*{ext}")
+                    candidates: list[Path] = list(p.rglob(f"*{ext}"))
                     if file_pattern:
                         candidates = [f for f in candidates
                                       if fnmatch.fnmatch(f.name, file_pattern)]
@@ -68,7 +68,7 @@ class Importer:
 
         if full:
             to_add = list(current_files.values())
-            to_update = []
+            to_update: list[Path] = []
             to_remove = list(manifest.all_paths() - set(current_files.keys()))
         else:
             to_add, to_update, to_remove = manifest.classify(current_files)
@@ -79,7 +79,7 @@ class Importer:
         # 分块 + 标签（仅处理变更文件）
         # chunks_data 结构：(source, file_path, tags, content, parent_text, parent_id)
         # parent_text/parent_id 在 parent_window=0 时为空字符串
-        chunks_data = []
+        chunks_data: list[tuple[str, str, str, str, str, str]] = []
         ck = self.cfg.chunking
         for f in changed:
             try:
@@ -101,14 +101,16 @@ class Importer:
             )
             if ck.parent_window > 0 and chunks and isinstance(chunks[0], ChildChunk):
                 # parent-child 模式
-                for cc in chunks:
+                child_chunks: list[ChildChunk] = chunks  # type: ignore[assignment]
+                for cc in child_chunks:
                     chunks_data.append(
                         (slug, str(f), ",".join(tags),
                          cc.text, cc.parent_text, cc.parent_id)
                     )
             else:
                 # 普通模式
-                for chunk_text_str in chunks:
+                plain_chunks: list[str] = chunks  # type: ignore[assignment]
+                for chunk_text_str in plain_chunks:
                     chunks_data.append(
                         (slug, str(f), ",".join(tags), chunk_text_str, "", "")
                     )
@@ -198,12 +200,12 @@ def clean_orphans(
     extensions = set(cfg.extensions)
     ignore_dirs = {str(item).strip() for item in cfg.ignore_dirs if str(item).strip()}
 
-    files = []
+    files: list[Path] = []
     for d in scan_dirs:
         p = Path(d).expanduser()
         if p.exists():
             for ext in extensions:
-                candidates = p.rglob(f"*{ext}")
+                candidates: list[Path] = list(p.rglob(f"*{ext}"))
                 files.extend(
                     f for f in candidates if not _path_under_ignored_dir(f, ignore_dirs)
                 )

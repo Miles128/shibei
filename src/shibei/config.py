@@ -3,6 +3,7 @@
 import os
 from pathlib import Path
 from dataclasses import dataclass, field
+from typing import Any
 
 import yaml
 
@@ -42,6 +43,16 @@ class TaggingConfig:
     path_rules: list[PathTagRule] = field(default_factory=list)
 
 
+@dataclass
+class ExpanderConfig:
+    enabled: bool = False                       # 是否启用查询扩展
+    synonyms_path: str = ""                     # 外部同义词表路径（YAML/JSON）
+    fuzzy: bool = False                         # 是否启用编辑距离模糊匹配兜底
+    fuzzy_max_distance: int = 1                 # 最大编辑距离
+    fuzzy_max_candidates: int = 3               # 每个词最多返回几个模糊候选
+    min_query_len: int = 2                      # 参与扩展的最小词长
+
+
 DEFAULT_IGNORE_DIRS = (
     ".git",
     "node_modules",
@@ -69,6 +80,7 @@ class Config:
     ignore_dirs: list[str] = field(default_factory=lambda: list(DEFAULT_IGNORE_DIRS))
     chunking: ChunkingConfig = field(default_factory=ChunkingConfig)
     tagging: TaggingConfig = field(default_factory=TaggingConfig)
+    expander: ExpanderConfig = field(default_factory=ExpanderConfig)
 
     @property
     def db_path_expanded(self) -> Path:
@@ -88,7 +100,7 @@ def load_config(path: str = "config.yaml") -> Config:
     """
     config_path = os.environ.get("SHIBEI_CONFIG", path)
 
-    raw = {}
+    raw: dict[str, Any] = {}
     if Path(config_path).exists():
         with open(config_path) as f:
             raw = yaml.safe_load(f) or {}
@@ -122,5 +134,9 @@ def load_config(path: str = "config.yaml") -> Config:
             cfg.tagging.rules = [TagRule(**r) for r in raw["tagging"]["rules"]]
         if "path_rules" in raw["tagging"]:
             cfg.tagging.path_rules = [PathTagRule(**r) for r in raw["tagging"]["path_rules"]]
+
+    # Query expansion
+    if "expander" in raw:
+        cfg.expander = ExpanderConfig(**raw["expander"])
 
     return cfg

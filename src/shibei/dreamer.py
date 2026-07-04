@@ -270,8 +270,8 @@ def _run_housekeeping(
             result["memory"]["expired_deleted"] = deleted
 
         candidates = store.find_compressible(
-            max_age_days=cfg["compress_max_age_days"],
-            keep_recent=cfg["compress_keep_recent"],
+            max_age_days=int(cfg["compress_max_age_days"]),
+            keep_recent=int(cfg["compress_keep_recent"]),
         )
         result["memory"]["compressible_candidates"] = candidates
         result["memory"]["compressible_count"] = len(candidates)
@@ -286,8 +286,8 @@ def _run_housekeeping(
         consolidation = consolidate(
             db_path,
             threshold=cfg["consolidate_threshold"],
-            min_cluster_size=cfg["consolidate_min_cluster_size"],
-            max_chunks=cfg["consolidate_max_chunks"],
+            min_cluster_size=int(cfg["consolidate_min_cluster_size"]),
+            max_chunks=int(cfg["consolidate_max_chunks"]),
         )
         result["consolidation"] = {
             "status": consolidation.get("status"),
@@ -302,9 +302,33 @@ def _run_housekeeping(
     return result
 
 
-def dream(db_path: Path,
-          housekeeping: Optional[dict] = None) -> dict:
+def _persist_dream_result(db_path: Path, result: dict) -> None:
+    """将最近一次 dream 结果持久化到 db_path/dream_result.json。"""
+    try:
+        persist_path = db_path / "dream_result.json"
+        persist_path.parent.mkdir(parents=True, exist_ok=True)
+        import json
+        persist_path.write_text(
+            json.dumps(result, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    except Exception as e:
+        logger.warning("持久化 dream 结果失败: %s", e)
+
+
+def dream(
+    db_path: Path,
+    housekeeping: Optional[dict] = None,
+    format: str = "brief",
+    persist: bool = True,
+) -> dict:
     """执行 dreaming — 知识库洞察 + 整理候选发现（零 LLM 依赖）。
+
+    Args:
+        db_path: 数据存储根路径。
+        housekeeping: 整理配置；False 禁用，True/None 使用默认，dict 自定义。
+        format: "brief" 返回统计与洞察摘要；"full" 额外返回 cross_references/patterns 详情。
+        persist: 是否将结果持久化到 db_path/dream_result.json，供后续 diff。
 
     dreaming 默认执行：
       - 清理过期记忆
@@ -327,9 +351,10 @@ def dream(db_path: Path,
         housekeeping=housekeeping,
     )
 
-    return {
+    result: dict = {
         "status": "ok",
         "timestamp": datetime.now().isoformat(timespec="seconds"),
+        "format": format,
         "stats": {
             "total_chunks": len(chunks),
             "unique_docs": len(set(c["source"] for c in chunks)),
@@ -338,8 +363,15 @@ def dream(db_path: Path,
                 kw for ref in cross_refs for kw in ref["shared_keywords"]
             )),
         },
-        "cross_references": cross_refs[:10],
-        "patterns": patterns,
         "insights": insights,
         "housekeeping": hk_result,
     }
+
+    if format == "full":
+        result["cross_references"] = cross_refs[:10]
+        result["patterns"] = patterns
+
+    if persist:
+        _persist_dream_result(db_path, result)
+
+    return result

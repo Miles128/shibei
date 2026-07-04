@@ -50,7 +50,7 @@ def tokenize_text(text: str) -> str:
 
     if jieba_available():
         import jieba
-        tokens = []
+        tokens: list[str] = []
         for chunk in _CHINESE_RE.split(text):
             if not chunk:
                 continue
@@ -81,7 +81,7 @@ def tokenize_query(text: str) -> str:
 
     if jieba_available():
         import jieba
-        tokens = []
+        tokens: list[str] = []
         for chunk in _CHINESE_RE.split(text):
             if not chunk:
                 continue

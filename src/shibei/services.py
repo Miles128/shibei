@@ -53,11 +53,15 @@ class Shibei:
     def dream(
         self,
         housekeeping: 'dict | None' = None,
+        format: str = "brief",
+        persist: bool = True,
     ) -> dict:
         from .dreamer import dream
         return dream(
             self.config.db_path_expanded,
             housekeeping=housekeeping,
+            format=format,
+            persist=persist,
         )
 
     # ---------- 对话记忆 ----------

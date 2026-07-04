@@ -57,6 +57,8 @@ def _handle_list_sources(brain, args):
 def _handle_dream(brain, args):
     return brain.dream(
         housekeeping=args.get("housekeeping"),
+        format=args.get("format", "brief"),
+        persist=args.get("persist", True),
     )
 
 
@@ -155,6 +157,17 @@ TOOLS = {
         "inputSchema": {
             "type": "object",
             "properties": {
+                "format": {
+                    "type": "string",
+                    "enum": ["brief", "full"],
+                    "default": "brief",
+                    "description": "输出格式。brief=统计+洞察+整理摘要（推荐 MCP 使用）；full=额外返回 cross_references 和 patterns 详情。",
+                },
+                "persist": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "是否将结果持久化到 db_path/dream_result.json，供后续 diff。",
+                },
                 "housekeeping": {
                     "type": ["boolean", "object"],
                     "default": True,

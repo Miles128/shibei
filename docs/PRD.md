@@ -187,7 +187,7 @@ AI Agent 正在从“单次会话工具”演化为“长期协作助手”，�
 | `shibei_search` | query, limit, tag | 排序结果列表（含 parent_text、related） |
 | `shibei_import` | dirs（可选）, full（可选） | 导入统计 |
 | `shibei_list_sources` | limit, offset | 文件列表 + 聚合摘要 |
-| `shibei_dream` | housekeeping（可选） | 洞察报告 + 整理统计 |
+| `shibei_dream` | format（可选，brief/full）, persist（可选）, housekeeping（可选） | 洞察报告 + 整理统计 |
 | `shibei_remember` | fact, category, source, tags | 写入结果（含 memory_id） |
 
 #### 6.2.5 对话记忆
@@ -253,6 +253,8 @@ result = {
 - 跨文档连接：共享关键词的文档对
 - 主题模式：标签下高频主题
 - 洞察：全局高频主题、孤立文档
+- 输出格式：`format="brief"` 返回统计+洞察+整理摘要；`format="full"` 额外返回 cross_references/patterns 详情
+- 持久化：`persist=true` 保存结果到 `db_path/dream_result.json`，供后续 diff
 - **自动整理**（零 LLM 依赖）：
   - 清理过期记忆
   - 识别可压缩记忆候选，由外部 Agent 决策是否压缩
@@ -402,7 +404,7 @@ shibei list [--limit N] [--offset N]
 shibei clean [--dirs DIRS] [--dry-run]
 
 # Dreaming
-shibei dream [--no-housekeeping]
+shibei dream [--no-housekeeping] [--format brief|full] [--no-persist]
 
 # 合并相似 chunk
 shibei consolidate [--apply] [--threshold F] [--output FILE]

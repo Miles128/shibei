@@ -66,7 +66,7 @@ def test_dream_basic():
             ("/b.md", "/b.md", "ai", "人工智能应用广泛。大模型是核心。", "", ""),
         ])
 
-        result = dream(db_path)
+        result = dream(db_path, format="full")
         assert result["status"] == "ok"
         assert "cross_references" in result
         assert "patterns" in result

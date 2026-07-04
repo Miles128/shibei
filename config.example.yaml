@@ -33,3 +33,18 @@ tagging:
       tag: daily-summary
     - pattern: ".*"
       tag: personal-note           # 兜底
+
+# === 查询扩展（零向量库） ===
+# 通过外部同义词表 + 编辑距离模糊匹配，提升 BM25 召回。
+# 同义词表示例：
+#   {
+#     "手机": ["移动电话", "手提电话"],
+#     "AI": ["人工智能", "大模型"]
+#   }
+expander:
+  enabled: false                   # 默认关闭
+  synonyms_path: ""                # YAML/JSON 同义词表路径
+  fuzzy: false                     # 是否启用编辑距离兜底
+  fuzzy_max_distance: 1            # 最大编辑距离
+  fuzzy_max_candidates: 3          # 每个词最多返回几个模糊候选
+  min_query_len: 2                 # 参与扩展的最小词长

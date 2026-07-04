@@ -10,9 +10,30 @@ def test_load_default_config():
     assert cfg.storage.search_engine == "bm25"
 
 
-def test_load_custom_config():
-    """自定义配置可加载"""
-    cfg = load_config("config.yaml")
+def test_load_custom_config(tmp_path):
+    """自定义配置可加载（不依赖仓库根目录 config.yaml）"""
+    config_path = tmp_path / "custom_config.yaml"
+    config_path.write_text(
+        """
+storage:
+  path: ~/.shibei/db
+sources:
+  - ~/Documents/notes
+  - ~/Documents/articles
+tagging:
+  rules:
+    - pattern: "(面试|复盘)"
+      tag: interview
+    - pattern: "(AI|大模型)"
+      tag: ai
+    - pattern: "(Redis|Kafka)"
+      tag: backend
+    - pattern: ".*"
+      tag: note
+""",
+        encoding="utf-8",
+    )
+    cfg = load_config(str(config_path))
     assert cfg.storage.path == "~/.shibei/db"
     assert len(cfg.sources) == 2
     assert len(cfg.tagging.rules) >= 4

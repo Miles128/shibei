@@ -115,9 +115,22 @@ class BM25Index:
                 )
             conn.commit()
 
-    def search(self, query: str, limit: int = 5, tag: 'str | None' = None) -> list[dict]:
-        """BM25 搜索，同时检索正文和摘要，RRF 融合后返回原文。"""
-        tokenized = tokenize_query(query)
+    def search(
+        self,
+        query: str,
+        limit: int = 5,
+        tag: 'str | None' = None,
+        tokenized_query: 'str | None' = None,
+    ) -> list[dict]:
+        """BM25 搜索，同时检索正文和摘要，RRF 融合后返回原文。
+
+        Args:
+            query: 原始查询字符串（仅用于日志/调试）。
+            limit: 返回结果数。
+            tag: 标签过滤。
+            tokenized_query: 若提供则直接使用该 tokenized 表达式，跳过内部 tokenize_query。
+        """
+        tokenized = tokenized_query if tokenized_query is not None else tokenize_query(query)
         content_rows = self._search_field("content_tokens", tokenized, limit * 3, tag)
         summary_rows = self._search_field("summary_tokens", tokenized, limit * 3, tag)
         return self._rrf_fuse_rows(content_rows, summary_rows, limit)
@@ -162,8 +175,8 @@ class BM25Index:
         _, source, file_path, tags, content = row[0], row[1], row[2], row[3], row[4]
         parent_text = row[5] if len(row) > 5 else ""
         parent_id = row[6] if len(row) > 6 else ""
-        rank = row[7] if len(row) > 7 else row[4]
-        rank = float(rank) if rank else 0.0
+        rank = row[7] if len(row) > 7 else 0.0
+        rank = float(rank) if rank is not None else 0.0
         item = {
             "_rowid": row[0],
             "source": source,

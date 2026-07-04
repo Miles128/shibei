@@ -182,7 +182,7 @@ class MemoryStore(AbstractMemoryStore):
                 )
             conn.commit()
 
-        return self.get(memory_id)
+        return self.get(memory_id) or {}
 
     def _find_most_similar(
         self, fact: str, category: Optional[str] = None, limit: int = 3

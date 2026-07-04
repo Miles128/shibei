@@ -15,6 +15,9 @@ logger = logging.getLogger(__name__)
 class SearchEngine(ABC):
     """搜索引擎策略接口。"""
 
+    def __init__(self, cfg: Config):
+        self.cfg = cfg
+
     @abstractmethod
     def search(self, query: str, limit: int, tag: 'str | None' = None) -> dict:
         """执行搜索，返回 {"query": ..., "total": ..., "results": [...]}。"""
@@ -28,9 +31,31 @@ class BM25Engine(SearchEngine):
         self.cfg = cfg
 
     def search(self, query: str, limit: int, tag: 'str | None' = None) -> dict:
+        from .tokenizer import tokenize_query
+
+        expansion = None
+        tokenized_query = tokenize_query(query)
+
+        if self.cfg.expander.enabled:
+            from .expander import QueryExpander
+            expander = QueryExpander(
+                synonyms_path=self.cfg.expander.synonyms_path or None,
+                fuzzy=self.cfg.expander.fuzzy,
+                fuzzy_max_distance=self.cfg.expander.fuzzy_max_distance,
+                fuzzy_max_candidates=self.cfg.expander.fuzzy_max_candidates,
+                min_query_len=self.cfg.expander.min_query_len,
+            )
+            expansion = expander.expand(query)
+            if expansion["expanded"]:
+                tokenized_query = tokenize_query(expansion["expanded"])
+                logger.debug("扩展查询: %s -> %s", query, expansion["expanded"])
+
         bm25 = BM25Index(str(self.cfg.db_path_expanded / "fts5.db"))
-        results = bm25.search(query, limit, tag)
-        return {"query": query, "total": len(results), "results": results}
+        results = bm25.search(query, limit, tag, tokenized_query=tokenized_query)
+        result = {"query": query, "total": len(results), "results": results}
+        if expansion:
+            result["expansion"] = expansion
+        return result
 
 
 _ENGINES: dict[str, type[SearchEngine]] = {

@@ -26,7 +26,33 @@ def cmd_serve(args):
 
 def cmd_search(args):
     brain = Shibei(args.resolved_config)
+
+    # 命令行参数可临时覆盖配置文件中的 expander 设置
+    if args.expand:
+        brain.config.expander.enabled = True
+    if args.no_expand:
+        brain.config.expander.enabled = False
+    if args.synonyms:
+        brain.config.expander.synonyms_path = args.synonyms
+        brain.config.expander.enabled = True
+    if args.fuzzy:
+        brain.config.expander.fuzzy = True
+        brain.config.expander.enabled = True
+
     results = brain.search(args.query, limit=args.limit, tag=args.tag)
+
+    # 展示查询扩展信息
+    expansion = results.get("expansion")
+    if expansion and (expansion.get("expansions") or expansion.get("fuzzy")):
+        print("🔍 查询扩展:")
+        if expansion.get("expansions"):
+            for word, syns in expansion["expansions"].items():
+                print(f"  {word} → {', '.join(syns)}")
+        if expansion.get("fuzzy"):
+            for word, candidates in expansion["fuzzy"].items():
+                print(f"  {word} ~ {', '.join(candidates)}")
+        print()
+
     for r in results["results"]:
         print(f"[{r['rank']}] {r['source']} (score={r['score']}, tags={r['tags']})")
         print(f"    {r['text'].replace(chr(10), ' ')}")
@@ -167,7 +193,12 @@ def cmd_dream(args):
     """执行 dreaming — 默认行为"""
     brain = Shibei(args.resolved_config)
     housekeeping = False if getattr(args, "no_housekeeping", False) else {}
-    result = brain.dream(housekeeping=housekeeping)
+    persist = not getattr(args, "no_persist", False)
+    result = brain.dream(
+        housekeeping=housekeeping,
+        format=args.format,
+        persist=persist,
+    )
 
     if result["status"] == "empty":
         print("知识库为空，先运行 shibei import")
@@ -179,13 +210,13 @@ def cmd_dream(args):
     print(f"   发现 {stats['cross_references']} 个跨文档连接, {stats['topics_with_connections']} 个共享主题")
     print()
 
-    if result["insights"]:
+    if result.get("insights"):
         print("📊 洞察：")
         for insight in result["insights"]:
             print(f"  • {insight}")
         print()
 
-    if result["cross_references"]:
+    if result.get("cross_references"):
         print("🔗 跨文档连接 (Top 10)：")
         for ref in result["cross_references"][:10]:
             kw_str = ", ".join(ref["shared_keywords"][:3])
@@ -193,7 +224,7 @@ def cmd_dream(args):
             print(f"    关键词: {kw_str} (强度={ref['strength']})")
         print()
 
-    if result["patterns"]:
+    if result.get("patterns"):
         print("🏷️  标签模式：")
         for tag, kws in result["patterns"].items():
             print(f"  [{tag}] {', '.join(kws)}")
@@ -414,6 +445,13 @@ def main():
     p.add_argument("query", help="搜索关键词")
     p.add_argument("--limit", type=int, default=5)
     p.add_argument("--tag", help="标签过滤")
+    p.add_argument("--expand", action="store_true",
+                   help="启用同义词表查询扩展（效果等同配置 expander.enabled=true）")
+    p.add_argument("--no-expand", action="store_true",
+                   help="禁用查询扩展（覆盖配置文件）")
+    p.add_argument("--synonyms", help="外部同义词表路径（YAML/JSON），临时启用扩展")
+    p.add_argument("--fuzzy", action="store_true",
+                   help="启用编辑距离模糊匹配兜底")
 
     # import
     p_import = sub.add_parser("import", help="全量导入文档")
@@ -491,6 +529,12 @@ def main():
     p_dream = sub.add_parser("dream", help="知识库 dreaming — 发现隐藏连接与洞察")
     p_dream.add_argument("--no-housekeeping", action="store_true",
                          help="禁用整理（记忆清理/候选识别）")
+    p_dream.add_argument("--format", choices=["brief", "full"], default="brief",
+                         help="输出格式：brief=摘要（默认），full=含跨文档连接与标签模式")
+    p_dream.add_argument("--persist", action="store_true", default=True,
+                         help="持久化结果到 db_path/dream_result.json（默认开启）")
+    p_dream.add_argument("--no-persist", action="store_true",
+                         help="不持久化结果")
 
     # profile
     p_profile = sub.add_parser("profile", help="管理配置 profile")
