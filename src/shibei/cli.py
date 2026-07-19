@@ -32,6 +32,7 @@ def cmd_context(args):
         limit=args.limit,
         tag=args.tag,
         write_hints=not args.no_write_hints,
+        query=getattr(args, "query", None),
     )
 
     print(f"query_used: {pack.get('query_used', '')}")
@@ -521,6 +522,8 @@ def main():
     # context
     p_ctx = sub.add_parser("context", help="答前上下文包（从用户消息召回文档+记忆）")
     p_ctx.add_argument("message", help="用户消息原文")
+    p_ctx.add_argument("--query", default=None,
+                       help="可选检索词（Agent/人工扩写后传入，优先于规则抽词）")
     p_ctx.add_argument("--limit", type=int, default=5)
     p_ctx.add_argument("--tag", help="标签过滤")
     p_ctx.add_argument("--no-write-hints", action="store_true",

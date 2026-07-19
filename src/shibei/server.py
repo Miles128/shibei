@@ -48,6 +48,7 @@ def _handle_context(brain, args):
         limit=args.get("limit", 5),
         tag=args.get("tag"),
         write_hints=args.get("write_hints", True),
+        query=args.get("query"),
     )
 
 
@@ -111,9 +112,12 @@ TOOLS = {
         "handler": _handle_context,
         "description": (
             "答前上下文包（多宿主强制召回入口）。收到非纯指令类用户消息时，"
-            "必须先调用本工具再回答。传入本轮用户原文 message，返回文档命中、"
-            "相关记忆、related，以及 suggest_remember（是否建议写入记忆）。"
-            "不要用本工具替代用户明确要求的关键词搜索；那种场景用 shibei_search。"
+            "必须先调用本工具再回答。\n"
+            "推荐流程：先用你自己的 LLM 从用户原文抽出 5–8 个检索关键词"
+            "（含同义/中英，去掉人称语气词），再调用本工具，"
+            "传入 message=用户原文、query=关键词。\n"
+            "返回文档命中、相关记忆、related，以及 suggest_remember。"
+            "不要依赖拾贝服务端 LLM；明确关键词搜索用 shibei_search。"
         ),
         "inputSchema": {
             "type": "object",
@@ -121,6 +125,13 @@ TOOLS = {
                 "message": {
                     "type": "string",
                     "description": "本轮用户消息原文",
+                },
+                "query": {
+                    "type": "string",
+                    "description": (
+                        "可选。由你（Agent）用自己的 LLM 扩写后的检索关键词"
+                        "（空格分隔）。强烈建议传入以提升召回；不传则服务端规则抽词。"
+                    ),
                 },
                 "limit": {
                     "type": "integer",
@@ -144,13 +155,13 @@ TOOLS = {
         "handler": _handle_search,
         "description": (
             "语义搜索个人知识库（用户明确要搜关键词时用）。"
+            "query 建议先用你自己的 LLM 改写成 BM25 友好关键词再传入。"
             "一般对话答前召回请优先用 shibei_context。"
-            "适用：用户明确说「搜一下…」「查笔记…」或需要自定义 query。"
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
-                "query": {"type": "string", "description": "搜索关键词"},
+                "query": {"type": "string", "description": "搜索关键词（建议 Agent 侧已改写）"},
                 "limit": {"type": "integer", "default": 5, "description": "返回条数上限"},
                 "tag": {"type": "string", "description": "标签过滤（如 interview/ai/finance）"},
             },

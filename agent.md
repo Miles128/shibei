@@ -8,7 +8,7 @@
 
 ### 必须先调用 `shibei_context` 的场景
 
-收到**非纯指令类**用户消息时，Agent **必须先**调用 `shibei_context(message=<用户原文>)`，再基于返回的 context pack 回答：
+收到**非纯指令类**用户消息时，Agent **必须先**召回再回答：
 
 1. 个人经历 / 做过的事：「我之前做过…」「我负责过…」「我们项目里…」
 2. 个人情况 / 偏好 / 习惯 / 目标：「我喜欢…」「我计划…」「我的目标是…」
@@ -19,6 +19,16 @@
 **可跳过 `shibei_context` 的纯指令**：`shibei import`、改配置、跑测试、纯代码编辑指令且不涉及个人知识。
 
 `shibei_search` 仅在用户**明确要求关键词搜索**时使用；日常答前召回一律用 `shibei_context`。
+
+### 查询改写：用 Agent 自己的 LLM（默认）
+
+**不要**依赖拾贝服务端 `SHIBEI_LLM_API_KEY`。答前流程：
+
+1. 用你自己的模型从用户原文抽出 **5–8 个**检索关键词（含同义/中英，去掉人称/语气词）
+2. 调用 `shibei_context(message=用户原文, query=关键词)`
+3. 基于 pack 回答
+
+服务端 `rewriter.use_llm` 仅给纯 CLI / 无人值守；MCP 场景保持关闭。
 
 ### 必须调用 `shibei_remember` 的场景
 
@@ -35,10 +45,11 @@
 
 ### 工具组合顺序
 
-1. `shibei_context` 召回已有文档 + 记忆
-2. 基于 pack 回答
-3. 若有新事实 → `shibei_remember`
-4. 用户明确要搜关键词 → `shibei_search`
+1. 用自己的 LLM 扩写检索词
+2. `shibei_context(message, query=关键词)` 召回
+3. 基于 pack 回答
+4. 若有新事实 → `shibei_remember`
+5. 用户明确要搜关键词 → `shibei_search(query=已改写关键词)`
 
 ### 宿主粘贴模板（各宿主共用）
 
@@ -46,7 +57,9 @@
 
 ```
 拾贝（Shibei）MCP 契约：
-- 非纯指令类用户消息 → 先调用 shibei_context(message=用户原文)，再回答
+- 非纯指令类用户消息 → 先用你自己的 LLM 抽出 5–8 个检索关键词，再调用
+  shibei_context(message=用户原文, query=关键词)，然后回答
+- 不要依赖拾贝服务端 LLM / SHIBEI_LLM_API_KEY
 - suggest_remember.should=true 或用户披露新事实 → 调用 shibei_remember
 - 用户明确要求「搜一下」时用 shibei_search；日常答前召回不用 search 替代 context
 ```

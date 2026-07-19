@@ -24,6 +24,7 @@ class FakeBrain:
         limit: int = 5,
         tag: str | None = None,
         write_hints: bool = True,
+        query: str | None = None,
     ):
         self.calls.append(
             (
@@ -33,6 +34,7 @@ class FakeBrain:
                     "limit": limit,
                     "tag": tag,
                     "write_hints": write_hints,
+                    "query": query,
                 },
             )
         )
@@ -188,7 +190,12 @@ def test_server_tools_list(server_env, monkeypatch):
     [
         (
             "shibei_context",
-            {"message": "我喜欢 Python", "limit": 3, "write_hints": True},
+            {
+                "message": "我喜欢 Python",
+                "query": "Python 偏好",
+                "limit": 3,
+                "write_hints": True,
+            },
             {
                 "message": "我喜欢 Python",
                 "query_used": "我喜欢 Python",
@@ -205,6 +212,7 @@ def test_server_tools_list(server_env, monkeypatch):
                     "limit": 3,
                     "tag": None,
                     "write_hints": True,
+                    "query": "Python 偏好",
                 },
             ),
         ),

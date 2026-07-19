@@ -113,8 +113,13 @@ def build_context(
     limit: int = 5,
     tag: str | None = None,
     write_hints: bool = True,
+    query: str | None = None,
 ) -> dict:
     """从用户消息构建答前上下文包。
+
+    Args:
+        message: 用户原文（用于 suggest_remember 与默认抽词）。
+        query: 可选检索词。宿主 Agent 用自己的 LLM 扩写后应传入，优先于规则抽词。
 
     Returns:
         {
@@ -131,7 +136,8 @@ def build_context(
         }
     """
     message = (message or "").strip()
-    query = extract_query_terms(message) or message
+    # Agent 侧改写优先；否则规则抽词；再退回原文
+    query = (query or "").strip() or extract_query_terms(message) or message
 
     search_result = Searcher(cfg).search(
         query, limit=limit, tag=tag, include_memories=True

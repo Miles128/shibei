@@ -1,0 +1,14 @@
+---
+description: 拾贝（Shibei）多宿主强制召回契约 — Agent 侧改写 + context
+alwaysApply: true
+---
+
+# 拾贝 MCP 契约
+
+当拾贝（Shibei）MCP 已挂载时：
+
+1. **非纯指令类用户消息** → 先用**你自己的 LLM** 从用户原文抽出 5–8 个检索关键词（含同义/中英，去掉人称语气词），再调用 `shibei_context(message=用户原文, query=关键词)`，然后回答。
+2. **不要**依赖拾贝服务端 LLM / `SHIBEI_LLM_API_KEY`。
+3. **`suggest_remember.should=true`** 或用户披露新个人事实 → 调用 `shibei_remember`。
+4. 用户明确要求「搜一下 / 查笔记」时用 `shibei_search`；日常答前召回**不要**用 search 替代 context。
+5. 可跳过 context 的纯指令：改配置、跑测试、纯代码编辑且不涉及个人知识。

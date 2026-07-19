@@ -8,16 +8,20 @@
 
 ```
 拾贝（Shibei）MCP 契约：
-- 非纯指令类用户消息 → 先调用 shibei_context(message=用户原文)，再回答
+- 非纯指令类用户消息 → 先用你自己的 LLM 抽出 5–8 个检索关键词，再调用
+  shibei_context(message=用户原文, query=关键词)，然后回答
+- 不要依赖拾贝服务端 LLM / SHIBEI_LLM_API_KEY
 - suggest_remember.should=true 或用户披露新事实 → 调用 shibei_remember
 - 用户明确要求「搜一下」时用 shibei_search；日常答前召回不用 search 替代 context
 ```
+
+口语扩写默认由**宿主 Agent 自己的模型**完成；服务端 `rewriter.use_llm` 仅给纯 CLI / 无人值守。
 
 ## 暴露的工具
 
 | 工具名 | 参数 | 说明 |
 |--------|------|------|
-| `shibei_context` | `message` (必填), `limit`, `tag`, `write_hints` | **答前上下文包**（强制召回入口） |
+| `shibei_context` | `message` (必填), `query` (可选，Agent 侧扩写词), `limit`, `tag`, `write_hints` | **答前上下文包**（强制召回入口） |
 | `shibei_search` | `query` (必填), `limit`, `tag` | BM25 搜索（明确关键词搜索时用） |
 | `shibei_import` | `dirs` (可选), `full` (可选) | 导入/重建知识库 |
 | `shibei_list_sources` | `limit`, `offset` | 列出已入库文件 |
@@ -29,7 +33,7 @@
 
 ### `shibei_context` 返回字段
 
-- `query_used`：抽取/改写后的检索词
+- `query_used`：实际检索词（优先用入参 `query`，否则服务端规则抽词）
 - `results` / `memories` / `related`：文档与记忆命中
 - `suggest_remember`：`{should, fact, reason}`，提示是否应写入记忆（服务端不自动写）
 

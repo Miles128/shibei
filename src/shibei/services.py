@@ -38,8 +38,12 @@ class Shibei:
         limit: int = 5,
         tag: 'str | None' = None,
         write_hints: bool = True,
+        query: 'str | None' = None,
     ) -> dict:
-        """从用户消息构建答前上下文包（文档 + 记忆 + 写侧提示）。"""
+        """从用户消息构建答前上下文包（文档 + 记忆 + 写侧提示）。
+
+        query: 可选。宿主 Agent 用自己的 LLM 扩写后的检索词，优先于规则抽词。
+        """
         from .context import build_context
         return build_context(
             self.config,
@@ -47,6 +51,7 @@ class Shibei:
             limit=limit,
             tag=tag,
             write_hints=write_hints,
+            query=query,
         )
 
     def import_all(self, dirs: 'list[str] | None' = None, full: bool = False,

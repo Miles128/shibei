@@ -44,6 +44,7 @@ class FakeBrain:
         limit: int = 5,
         tag: str | None = None,
         write_hints: bool = True,
+        query: str | None = None,
     ):
         self.calls.append(
             (
@@ -53,6 +54,7 @@ class FakeBrain:
                     "limit": limit,
                     "tag": tag,
                     "write_hints": write_hints,
+                    "query": query,
                 },
             )
         )
@@ -222,6 +224,7 @@ def test_cli_context(config_path, monkeypatch, capsys):
                 "limit": 3,
                 "tag": None,
                 "write_hints": True,
+                "query": None,
             },
         )
     ]

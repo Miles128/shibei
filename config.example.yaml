@@ -44,9 +44,11 @@ tagging:
 # === 查询改写（口语 -> BM25 友好） ===
 # 在 expander 之前执行，按顺序做关键词替换。
 rewriter:
-  enabled: false                   # 默认关闭
-  use_llm: false                   # 规则改写后再用 LLM 扩写关键词（需 SHIBEI_LLM_API_KEY）
-  max_terms: 8                     # LLM 改写最多输出词数
+  enabled: false                   # 默认关闭（规则兜底）
+  # 口语→关键词扩写：默认由宿主 Agent 用自己的 LLM 完成，再调 shibei_context/search。
+  # use_llm 仅给纯 CLI / 无人值守；开启需 SHIBEI_LLM_API_KEY。
+  use_llm: false
+  max_terms: 8                     # 服务端 LLM 改写最多输出词数
   rules:
     - from: "讲讲"                # 口语关键词
       to: "介绍"                  # 改写后的关键词

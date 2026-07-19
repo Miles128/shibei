@@ -55,6 +55,27 @@ def test_build_context_returns_pack():
         assert pack["total"] >= 1 or len(pack["memories"]) >= 1
 
 
+def test_build_context_prefers_agent_query():
+    """Agent 侧传入的 query 优先于规则抽词"""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db_path = Path(tmpdir)
+        bm25 = BM25Index(str(db_path / "fts5.db"))
+        bm25.add_batch([
+            ("/redis.md", "/redis.md", "interview",
+             "面试重点考察 Redis 缓存与持久化。", "", ""),
+        ])
+        cfg = Config(storage=StorageConfig(path=str(db_path)))
+        pack = build_context(
+            cfg,
+            message="讲讲那个东西怎么样",
+            query="Redis 缓存 面试",
+            limit=5,
+        )
+        assert pack["query_used"] == "Redis 缓存 面试"
+        assert pack["total"] >= 1
+        assert "Redis" in pack["results"][0]["text"]
+
+
 def test_shibei_context_sdk(tmp_path, monkeypatch):
     """Shibei.context SDK 入口"""
     db_path = tmp_path / "db"

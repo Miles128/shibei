@@ -80,22 +80,27 @@ llm:
 
 ### 答前上下文（多宿主强制召回）
 
-Agent 不应靠「想起来再搜」。挂载 MCP 后，非纯指令类用户消息应先调 `shibei_context`：
+Agent 不应靠「想起来再搜」。挂载 MCP 后，答前流程：
+
+1. 用**宿主 Agent 自己的 LLM** 抽出 5–8 个检索关键词
+2. 调 `shibei_context(message=原文, query=关键词)`
+3. 基于 pack 回答（无需 `SHIBEI_LLM_API_KEY`）
 
 ```bash
-shibei context "讲讲我面试里的 Redis"
+shibei context "讲讲我面试里的 Redis" --query "Redis 缓存 面试"
 ```
 
-返回文档命中、相关记忆，以及 `suggest_remember`（是否建议写入记忆）。契约详见 [docs/MCP_INTEGRATION.md](docs/MCP_INTEGRATION.md) 与 [agent.md](agent.md)。
+返回文档命中、相关记忆，以及 `suggest_remember`。契约详见 [docs/MCP_INTEGRATION.md](docs/MCP_INTEGRATION.md) 与 [agent.md](agent.md)。
 
 ### 查询改写与扩展
 
-搜索管线：`规则改写 → LLM 关键词改写（可选）→ 同义词扩展 → BM25`。
+- **默认（MCP）**：Agent 侧改写 → 传入 `query`
+- **服务端兜底**：`规则改写 →（可选）服务端 LLM → 同义词扩展 → BM25`
 
 ```yaml
 rewriter:
   enabled: true
-  use_llm: true            # 需 SHIBEI_LLM_API_KEY；失败自动降级
+  use_llm: false           # MCP 场景保持 false；仅 CLI 无人值守才开
   max_terms: 8
 expander:
   enabled: true
@@ -105,9 +110,8 @@ expander:
 
 ```bash
 shibei search "大模型" --expand          # 同义词扩展
-shibei search "讲讲 Redis" --llm-rewrite # LLM 改写（需 API key）
+shibei search "讲讲 Redis" --llm-rewrite # 服务端 LLM（需 API key，可选）
 ```
-
 同义词表示例（`data/synonyms.yaml`）：
 
 ```yaml

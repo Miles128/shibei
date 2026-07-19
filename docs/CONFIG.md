@@ -78,7 +78,7 @@ rewriter:
       enabled: true
 ```
 
-`use_llm: true` 需要环境变量 `SHIBEI_LLM_API_KEY`；无 key 或调用失败时自动降级，不阻断搜索。
+口语扩写**默认由宿主 Agent 自己的 LLM 完成**（见 MCP 契约）。`use_llm: true` 仅给纯 CLI / 无人值守，需要 `SHIBEI_LLM_API_KEY`；无 key 或失败时自动降级，不阻断搜索。
 
 ## CLI 参数
 
