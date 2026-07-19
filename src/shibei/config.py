@@ -3,6 +3,7 @@
 import os
 from pathlib import Path
 from dataclasses import dataclass, field
+from typing import Any
 
 import yaml
 
@@ -31,8 +32,60 @@ class TagRule:
 
 
 @dataclass
+class PathTagRule:
+    pattern: str = ""      # glob 路径模式，如 "面试/HSBC/*.md"
+    tags: str = ""         # 逗号分隔的标签，如 "interview,hsbc"
+
+
+@dataclass
 class TaggingConfig:
     rules: list[TagRule] = field(default_factory=list)
+    path_rules: list[PathTagRule] = field(default_factory=list)
+
+
+@dataclass
+class ExpanderConfig:
+    enabled: bool = False                       # 是否启用查询扩展
+    synonyms_path: str = ""                     # 外部同义词表路径（YAML/JSON）
+    fuzzy: bool = False                         # 是否启用编辑距离模糊匹配兜底
+    fuzzy_max_distance: int = 1                 # 最大编辑距离
+    fuzzy_max_candidates: int = 3               # 每个词最多返回几个模糊候选
+    min_query_len: int = 2                      # 参与扩展的最小词长
+
+
+@dataclass
+class RewriteRule:
+    """查询改写规则：source -> target。"""
+
+    source: str = ""      # 待替换关键词
+    target: str = ""      # 替换后的关键词
+    enabled: bool = True  # 是否启用
+
+
+@dataclass
+class RewriterConfig:
+    enabled: bool = False                   # 是否启用查询改写
+    use_llm: bool = False                   # 规则改写后是否再用 LLM 扩写关键词
+    max_terms: int = 8                      # LLM 改写最多输出词数
+    rules: list[RewriteRule] = field(default_factory=list)  # 改写规则列表
+
+
+@dataclass
+class LLMConfig:
+    """LLM 摘要生成配置。
+
+    API key 不从此配置读取，统一使用环境变量 SHIBEI_LLM_API_KEY。
+    """
+
+    enabled: bool = False                       # 是否启用 LLM 摘要
+    base_url: str = "https://api.openai.com/v1"  # OpenAI-compatible API 地址
+    model: str = "gpt-4o-mini"                  # 模型名称
+    timeout: float = 30.0                       # HTTP 超时（秒）
+    temperature: float = 0.3                    # 采样温度
+    max_tokens: int = 100                       # 每次摘要最大生成 token 数
+    max_content_length: int = 1000              # 输入 chunk 的最大字符数（0=不限制）
+    max_summary_length: int = 50                # 期望摘要最大字数（用于 prompt）
+    prompt: str = ""                            # 自定义 prompt 模板（留空用默认）
 
 
 DEFAULT_IGNORE_DIRS = (
@@ -62,6 +115,9 @@ class Config:
     ignore_dirs: list[str] = field(default_factory=lambda: list(DEFAULT_IGNORE_DIRS))
     chunking: ChunkingConfig = field(default_factory=ChunkingConfig)
     tagging: TaggingConfig = field(default_factory=TaggingConfig)
+    expander: ExpanderConfig = field(default_factory=ExpanderConfig)
+    rewriter: RewriterConfig = field(default_factory=RewriterConfig)
+    llm: LLMConfig = field(default_factory=LLMConfig)
 
     @property
     def db_path_expanded(self) -> Path:
@@ -81,7 +137,7 @@ def load_config(path: str = "config.yaml") -> Config:
     """
     config_path = os.environ.get("SHIBEI_CONFIG", path)
 
-    raw = {}
+    raw: dict[str, Any] = {}
     if Path(config_path).exists():
         with open(config_path) as f:
             raw = yaml.safe_load(f) or {}
@@ -110,7 +166,39 @@ def load_config(path: str = "config.yaml") -> Config:
         cfg.chunking = ChunkingConfig(**raw["chunking"])
 
     # Tagging
-    if "tagging" in raw and "rules" in raw["tagging"]:
-        cfg.tagging.rules = [TagRule(**r) for r in raw["tagging"]["rules"]]
+    if "tagging" in raw:
+        if "rules" in raw["tagging"]:
+            cfg.tagging.rules = [TagRule(**r) for r in raw["tagging"]["rules"]]
+        if "path_rules" in raw["tagging"]:
+            cfg.tagging.path_rules = [PathTagRule(**r) for r in raw["tagging"]["path_rules"]]
+
+    # Query expansion
+    if "expander" in raw:
+        cfg.expander = ExpanderConfig(**raw["expander"])
+
+    # Query rewrite
+    if "rewriter" in raw:
+        rw = raw["rewriter"]
+        cfg.rewriter = RewriterConfig()
+        if "enabled" in rw:
+            cfg.rewriter.enabled = rw["enabled"]
+        if "use_llm" in rw:
+            cfg.rewriter.use_llm = bool(rw["use_llm"])
+        if "max_terms" in rw:
+            cfg.rewriter.max_terms = int(rw["max_terms"])
+        if "rules" in rw:
+            cfg.rewriter.rules = [
+                RewriteRule(
+                    source=r.get("from", ""),
+                    target=r.get("to", ""),
+                    enabled=r.get("enabled", True),
+                )
+                for r in rw["rules"]
+                if isinstance(r, dict)
+            ]
+
+    # LLM 摘要
+    if "llm" in raw:
+        cfg.llm = LLMConfig(**raw["llm"])
 
     return cfg

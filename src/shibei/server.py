@@ -1,12 +1,14 @@
 """MCP JSON-RPC stdio server — 任何 MCP 兼容 Agent 可接入。
 
-暴露七个工具：
+暴露工具：
+  - shibei_context           : 答前上下文包（强制召回入口）
   - shibei_search            : 语义搜索
   - shibei_import            : 导入文档
   - shibei_list_sources      : 列出已入库文件
   - shibei_dream             : 知识库洞察 + 整理建议（skill 形式，零 LLM 依赖）
   - shibei_remember          : 写入 Agent 对话记忆
   - shibei_update_memory     : 更新/压缩已有记忆
+  - shibei_consolidate       : 相似 chunk 聚类
   - shibei_apply_consolidation: 根据外部 Agent 提供的摘要直接合并相似 chunk
 
 接入方式（以 Hermes config.yaml 为例）：
@@ -40,6 +42,15 @@ def _handle_search(brain, args):
     )
 
 
+def _handle_context(brain, args):
+    return brain.context(
+        message=args.get("message", ""),
+        limit=args.get("limit", 5),
+        tag=args.get("tag"),
+        write_hints=args.get("write_hints", True),
+    )
+
+
 def _handle_import(brain, args):
     dirs = args.get("dirs")
     full = args.get("full", False)
@@ -56,9 +67,9 @@ def _handle_list_sources(brain, args):
 
 def _handle_dream(brain, args):
     return brain.dream(
+        housekeeping=args.get("housekeeping"),
         format=args.get("format", "brief"),
         persist=args.get("persist", True),
-        housekeeping=args.get("housekeeping"),
     )
 
 
@@ -96,9 +107,46 @@ def _handle_update_memory(brain, args):
 
 
 TOOLS = {
+    "shibei_context": {
+        "handler": _handle_context,
+        "description": (
+            "答前上下文包（多宿主强制召回入口）。收到非纯指令类用户消息时，"
+            "必须先调用本工具再回答。传入本轮用户原文 message，返回文档命中、"
+            "相关记忆、related，以及 suggest_remember（是否建议写入记忆）。"
+            "不要用本工具替代用户明确要求的关键词搜索；那种场景用 shibei_search。"
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "message": {
+                    "type": "string",
+                    "description": "本轮用户消息原文",
+                },
+                "limit": {
+                    "type": "integer",
+                    "default": 5,
+                    "description": "返回条数上限",
+                },
+                "tag": {
+                    "type": "string",
+                    "description": "标签过滤（如 interview/ai/finance）",
+                },
+                "write_hints": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "是否返回 suggest_remember 写侧提示",
+                },
+            },
+            "required": ["message"],
+        },
+    },
     "shibei_search": {
         "handler": _handle_search,
-        "description": "语义搜索个人知识库。当用户提到以下任一情况时，必须优先调用本工具：\n1. 用户做过的事、经历、工作成果、项目背景（如'我之前做过...'、'我负责过...'、'我们项目里...'）\n2. 用户的个人情况、偏好、习惯、目标（如'我喜欢...'、'我计划...'、'我的习惯是...'）\n3. 用户询问自己之前整理/记录/收藏过的内容（如'我笔记里有...'、'我好像写过...'）\n4. 需要调用个人历史信息才能准确回答的问题。搜索 query 应提取用户问题中的核心实体和关键词，必要时去掉人称词。",
+        "description": (
+            "语义搜索个人知识库（用户明确要搜关键词时用）。"
+            "一般对话答前召回请优先用 shibei_context。"
+            "适用：用户明确说「搜一下…」「查笔记…」或需要自定义 query。"
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -153,7 +201,7 @@ TOOLS = {
     },
     "shibei_dream": {
         "handler": _handle_dream,
-        "description": "知识库 dreaming — 发现隐藏连接、跨文档关联、主题模式，并执行零 LLM 依赖的整理：清理过期记忆、识别可压缩记忆候选、发现相似 chunk 候选。Shibei 自身不调用 LLM；具体压缩/合并由外部 Agent 判断并调用 shibei_update_memory / shibei_apply_consolidation 执行。默认精简输出（stats+insights+housekeeping统计），需要完整 cross_references 时用 full 格式。",
+        "description": "知识库 dreaming — 发现隐藏连接、跨文档关联、主题模式，并执行零 LLM 依赖的整理：清理过期记忆、识别可压缩记忆候选、发现相似 chunk 候选。Shibei 自身不调用 LLM；具体压缩/合并由外部 Agent 判断并调用 shibei_update_memory / shibei_apply_consolidation 执行。",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -161,12 +209,12 @@ TOOLS = {
                     "type": "string",
                     "enum": ["brief", "full"],
                     "default": "brief",
-                    "description": "brief=精简（推荐 MCP，只返回 stats+insights+housekeeping统计，省 token）；full=完整（返回 cross_references + patterns + 详细 clusters）",
+                    "description": "输出格式。brief=统计+洞察+整理摘要（推荐 MCP 使用）；full=额外返回 cross_references 和 patterns 详情。",
                 },
                 "persist": {
                     "type": "boolean",
                     "default": True,
-                    "description": "是否持久化结果，用于后续 diff 对比",
+                    "description": "是否将结果持久化到 db_path/dream_result.json，供后续 diff。",
                 },
                 "housekeeping": {
                     "type": ["boolean", "object"],
@@ -178,7 +226,7 @@ TOOLS = {
     },
     "shibei_consolidate": {
         "handler": _handle_consolidate,
-        "description": "整理知识库：发现内容高度重叠的 chunk 聚类。Shibei 自身不生成合并摘要也不自动写回数据库；如需应用合并，请用 shibei_apply_consolidation 传入外部 Agent 生成的摘要。",
+        "description": "整理知识库：发现内容高度重叠的 chunk 聚类。默认只返回候选；设置 apply=true 可直接用启发式摘要合并并写回数据库（零 LLM 依赖）。",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -197,12 +245,17 @@ TOOLS = {
                     "default": 500,
                     "description": "最大扫描 chunk 数",
                 },
+                "apply": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "true=直接应用启发式合并；false=只返回候选",
+                },
             },
         },
     },
     "shibei_apply_consolidation": {
         "handler": _handle_apply_consolidation,
-        "description": "根据外部 Agent（如 dreaming skill）提供的 cluster 摘要，直接删除原重叠 chunks 并把合并摘要写回知识库。零 LLM 依赖：摘要必须由调用方提前生成。",
+        "description": "根据外部 Agent 提供的 cluster 摘要，直接删除原重叠 chunks 并把合并摘要写回知识库。若 summary 为空，则自动使用启发式拼接摘要（零 LLM 依赖）。",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -236,7 +289,16 @@ TOOLS = {
     },
     "shibei_remember": {
         "handler": _handle_remember,
-        "description": "将对话或交互中的重要事实写入 Shibei 长期记忆。Agent 必须在以下场景主动调用：\n1. 用户提到自己的个人情况、偏好、习惯、目标（如'我喜欢...'、'我习惯...'、'我计划...'）\n2. 用户描述自己做过的项目、工作成果、经历（如'我开发过...'、'我负责过...'、'我们之前...'）\n3. 用户明确的关键决策、重要结论、约定（如'我决定...'、'请记住...'）\n4. 任何你认为后续回答用户问题时可能用得上、且不在知识库中的事实。\n写入的记忆会在后续 shibei_search 中自动召回。",
+        "description": (
+            "将对话或交互中的重要事实写入拾贝长期记忆。"
+            "若 shibei_context 返回 suggest_remember.should=true，应答后主动调用本工具写入。"
+            "必须调用场景：\n"
+            "1. 用户个人情况/偏好/习惯/目标（'我喜欢...'、'我计划...'）\n"
+            "2. 项目/工作经历（'我开发过...'、'我负责过...'）\n"
+            "3. 关键决策与约定（'我决定...'、'请记住...'）\n"
+            "4. 后续可能复用且库中尚无的新事实。\n"
+            "写入后会在后续 shibei_context / shibei_search 中自动召回。"
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {

@@ -79,6 +79,21 @@ class BM25Index:
 
             conn.commit()
 
+    def _rebuild_fts_index(self, conn: sqlite3.Connection):
+        """重建 FTS5 索引：清空后从 content 表重新索引所有内容。
+
+        用于批量删除后修复 contentless FTS5 索引，避免 'database disk image is malformed'。
+        """
+        conn.execute(f"INSERT INTO {FTS_TABLE}({FTS_TABLE}) VALUES('delete-all')")
+        rows = conn.execute(
+            f"SELECT rowid, content, {SUMMARY_COL} FROM {CONTENT_TABLE}"
+        ).fetchall()
+        for rowid, content, summary in rows:
+            conn.execute(
+                f"INSERT INTO {FTS_TABLE} (rowid, content_tokens, summary_tokens) VALUES (?, ?, ?)",
+                (rowid, tokenize_text(content or ""), tokenize_text(summary or "")),
+            )
+
     def clear(self):
         with sqlite3.connect(self.db_path, timeout=30.0) as conn:
             conn.execute(f"DELETE FROM {CONTENT_TABLE}")
@@ -115,9 +130,22 @@ class BM25Index:
                 )
             conn.commit()
 
-    def search(self, query: str, limit: int = 5, tag: 'str | None' = None) -> list[dict]:
-        """BM25 搜索，同时检索正文和摘要，RRF 融合后返回原文。"""
-        tokenized = tokenize_query(query)
+    def search(
+        self,
+        query: str,
+        limit: int = 5,
+        tag: 'str | None' = None,
+        tokenized_query: 'str | None' = None,
+    ) -> list[dict]:
+        """BM25 搜索，同时检索正文和摘要，RRF 融合后返回原文。
+
+        Args:
+            query: 原始查询字符串（仅用于日志/调试）。
+            limit: 返回结果数。
+            tag: 标签过滤。
+            tokenized_query: 若提供则直接使用该 tokenized 表达式，跳过内部 tokenize_query。
+        """
+        tokenized = tokenized_query if tokenized_query is not None else tokenize_query(query)
         content_rows = self._search_field("content_tokens", tokenized, limit * 3, tag)
         summary_rows = self._search_field("summary_tokens", tokenized, limit * 3, tag)
         return self._rrf_fuse_rows(content_rows, summary_rows, limit)
@@ -162,8 +190,8 @@ class BM25Index:
         _, source, file_path, tags, content = row[0], row[1], row[2], row[3], row[4]
         parent_text = row[5] if len(row) > 5 else ""
         parent_id = row[6] if len(row) > 6 else ""
-        rank = row[7] if len(row) > 7 else row[4]
-        rank = float(rank) if rank else 0.0
+        rank = row[7] if len(row) > 7 else 0.0
+        rank = float(rank) if rank is not None else 0.0
         item = {
             "_rowid": row[0],
             "source": source,
@@ -240,34 +268,20 @@ class BM25Index:
         ]
 
     def remove_sources(self, sources: list[str]):
-        """删除指定 source 的所有 chunks（按 rowid 精确删除）。
+        """删除指定 source 的所有 chunks 及其 FTS 索引。
 
-        FTS5 contentless 表不支持直接 DELETE，
-        需用特殊 'delete' 命令并提供原始 tokens。
-        由于 tokenization 确定性，可从 content/summary 重新生成 tokens。
-        复杂度：O(k) per source，k = 该 source 的 chunk 数。
+        先删除 content 表中的行，再重建整个 FTS5 索引。contentless FTS5 在大批量
+        'delete' 操作下容易出现 'database disk image is malformed'，重建更稳定。
         """
         if not sources:
             return
         with sqlite3.connect(self.db_path, timeout=30.0) as conn:
-            for source in sources:
-                rows = conn.execute(
-                    f"SELECT rowid, content, {SUMMARY_COL} FROM {CONTENT_TABLE} WHERE source = ?",
-                    (source,),
-                ).fetchall()
-                for rowid, content, summary in rows:
-                    # FTS5 contentless: 用 'delete' 命令 + 原始 tokens 删除索引项
-                    content_tokens = tokenize_text(content or "")
-                    summary_tokens = tokenize_text(summary or "")
-                    conn.execute(
-                        f"INSERT INTO {FTS_TABLE}({FTS_TABLE}, rowid, content_tokens, summary_tokens) "
-                        f"VALUES('delete', ?, ?, ?)",
-                        (rowid, content_tokens, summary_tokens),
-                    )
-                    conn.execute(
-                        f"DELETE FROM {CONTENT_TABLE} WHERE rowid = ?",
-                        (rowid,),
-                    )
+            placeholders = ",".join("?" * len(sources))
+            conn.execute(
+                f"DELETE FROM {CONTENT_TABLE} WHERE source IN ({placeholders})",
+                sources,
+            )
+            self._rebuild_fts_index(conn)
             conn.commit()
 
     def list_sources(self) -> list[str]:
@@ -280,26 +294,17 @@ class BM25Index:
     def delete_by_rowids(self, rowids: list[int]):
         """按 rowid 精确删除 chunks 及其 FTS 索引。
 
-        FTS5 contentless 表需用 'delete' 命令 + 原始 tokens 删除。
+        先删除 content 表中的行，再重建 FTS5 索引，避免 contentless FTS5
+        在大批量 'delete' 操作下出现 'database disk image is malformed'。
         """
         if not rowids:
             return
 
         with sqlite3.connect(self.db_path, timeout=30.0) as conn:
-            for rowid in rowids:
-                row = conn.execute(
-                    f"SELECT content, {SUMMARY_COL} FROM {CONTENT_TABLE} WHERE rowid = ?",
-                    (rowid,),
-                ).fetchone()
-                if not row:
-                    continue
-                content, summary = row
-                content_tokens = tokenize_text(content or "")
-                summary_tokens = tokenize_text(summary or "")
-                conn.execute(
-                    f"INSERT INTO {FTS_TABLE}({FTS_TABLE}, rowid, content_tokens, summary_tokens) "
-                    f"VALUES('delete', ?, ?, ?)",
-                    (rowid, content_tokens, summary_tokens),
-                )
-                conn.execute(f"DELETE FROM {CONTENT_TABLE} WHERE rowid = ?", (rowid,))
+            placeholders = ",".join("?" * len(rowids))
+            conn.execute(
+                f"DELETE FROM {CONTENT_TABLE} WHERE rowid IN ({placeholders})",
+                rowids,
+            )
+            self._rebuild_fts_index(conn)
             conn.commit()

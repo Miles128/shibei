@@ -1,44 +1,66 @@
-# Agent Guide — Shibei 开发指南
+# Agent Guide — 拾贝（Shibei）开发指南
 
 > 本文件为 AI Agent 提供项目开发上下文。Agent 在修改本项目前应先阅读此文件。
 
-## MCP 使用规则（必读）
+## MCP 使用规则（必读 · 多宿主契约）
 
-当 Shibei 作为 MCP server 挂载到当前 Agent 时，Agent 应遵循以下规则主动调用 Shibei 工具：
+当拾贝作为 MCP server 挂载到任意 Agent（Cursor / Hermes / Trae / Claude Desktop）时，遵循同一套契约，不依赖特定 IDE Hook。
 
-### 必须调用 `shibei_search` 的场景
+### 必须先调用 `shibei_context` 的场景
 
-当用户消息涉及以下内容时，Agent **必须**先调用 `shibei_search`，再基于搜索结果回答：
+收到**非纯指令类**用户消息时，Agent **必须先**调用 `shibei_context(message=<用户原文>)`，再基于返回的 context pack 回答：
 
-1. **用户的个人经历/做过的事**："我之前做过..."、"我负责过..."、"我们项目里..."、"我开发过..."
-2. **用户的个人情况/偏好/习惯/目标**："我喜欢..."、"我习惯..."、"我计划..."、"我的目标是..."
-3. **用户自己的知识库内容**："我笔记里有..."、"我好像写过..."、"我整理过..."
-4. **需要个人历史信息才能回答的问题**：例如基于用户过往项目给出建议、推荐适合用户的方案等。
+1. 个人经历 / 做过的事：「我之前做过…」「我负责过…」「我们项目里…」
+2. 个人情况 / 偏好 / 习惯 / 目标：「我喜欢…」「我计划…」「我的目标是…」
+3. 知识库内容：「我笔记里有…」「我好像写过…」
+4. 需要个人历史才能回答的问题
+5. 其他非琐碎对话（解释概念、给建议、闲聊中带「我」等）
+
+**可跳过 `shibei_context` 的纯指令**：`shibei import`、改配置、跑测试、纯代码编辑指令且不涉及个人知识。
+
+`shibei_search` 仅在用户**明确要求关键词搜索**时使用；日常答前召回一律用 `shibei_context`。
 
 ### 必须调用 `shibei_remember` 的场景
 
-当用户首次披露以下信息时，Agent **应主动调用** `shibei_remember` 写入长期记忆：
+当用户首次披露以下信息，或 `shibei_context` 返回 `suggest_remember.should=true` 时，Agent **应主动调用** `shibei_remember`：
 
 1. 个人偏好、习惯、目标
 2. 项目背景、工作经历、技术栈
 3. 关键决策、重要结论
-4. 任何后续对话可能复用的新事实
+4. 后续对话可能复用的新事实
+5. 用户以「我」为主语的陈述
+6. 用户主动询问的中立/开放性问题：Agent 的回答本身也可记一条交互偏好
+
+**不要**在服务端自动写入；由 Agent 确认后调用 `shibei_remember`。
 
 ### 工具组合顺序
 
-- 先 `shibei_search` 召回已有信息
-- 回答中确认/补充后，如有新事实再用 `shibei_remember` 写入
-- 不确定是否已存在时，先搜索，避免重复写入
+1. `shibei_context` 召回已有文档 + 记忆
+2. 基于 pack 回答
+3. 若有新事实 → `shibei_remember`
+4. 用户明确要搜关键词 → `shibei_search`
+
+### 宿主粘贴模板（各宿主共用）
+
+将以下段落加入 Cursor Rule / Hermes system / Trae skill / Claude 项目说明：
+
+```
+拾贝（Shibei）MCP 契约：
+- 非纯指令类用户消息 → 先调用 shibei_context(message=用户原文)，再回答
+- suggest_remember.should=true 或用户披露新事实 → 调用 shibei_remember
+- 用户明确要求「搜一下」时用 shibei_search；日常答前召回不用 search 替代 context
+```
 
 ## 项目定位
 
-Shibei（十倍）是面向 AI Agent 的中文语义知识库，定位为 Agent 的"外部大脑"。核心能力：
+拾贝（Shibei）是面向 AI Agent 的中文语义知识库，定位为 Agent 的「外部大脑」。核心能力：
 
-- **文档导入**：扫描目录 → 分块 → 去重 → 存入 BM25 索引
-- **全文搜索**：基于 SQLite FTS5 的 BM25 搜索引擎
-- **对话记忆**：Agent 对话事实的持久化存储与版本链
-- **Dreaming**：知识库自主思考，发现跨文档隐藏连接，并以 skill 形式输出整理建议（可压缩记忆候选、相似 chunk 候选），由外部 Agent 用 LLM 判断后执行
-- **MCP 协议**：7 个 MCP 工具供 AI Agent 直接调用：search、import、list_sources、remember、update_memory、consolidate/apply_consolidation、dream
+- **文档导入**：扫描目录 → 分块 → 去重 → 可选一句话摘要 → BM25 索引
+- **全文搜索**：SQLite FTS5 BM25（正文 + 摘要双列，RRF 融合）；可选规则/LLM 查询改写
+- **答前上下文**：`shibei_context` 从用户消息抽词并召回文档 + 记忆
+- **对话记忆**：持久化 + supersedes 版本链
+- **Dreaming**：跨文档洞察与整理候选（零 LLM 依赖）
+- **MCP**：9 个工具：context、search、import、list_sources、remember、update_memory、consolidate、apply_consolidation、dream
 
 ## 技术栈
 
@@ -46,8 +68,8 @@ Shibei（十倍）是面向 AI Agent 的中文语义知识库，定位为 Agent 
 |---|---|
 | 存储 | SQLite FTS5（BM25）|
 | 分词 | jieba（优先）+ bigram 降级 |
-| LLM | OpenAI-compatible API（urllib，零第三方 HTTP 依赖）|
-| 协议 | MCP (Model Context Protocol) JSON-RPC over stdio |
+| LLM | OpenAI-compatible API（urllib，可选：摘要 / 查询改写）|
+| 协议 | MCP JSON-RPC over stdio |
 | Python | >=3.9 |
 
 ## 项目结构
@@ -56,27 +78,25 @@ Shibei（十倍）是面向 AI Agent 的中文语义知识库，定位为 Agent 
 src/shibei/
 ├── __init__.py          # 包入口
 ├── __main__.py          # python -m shibei 入口
-├── cli.py               # CLI 命令（import/search/dream/remember/mcp/...）
-├── config.py            # YAML 配置加载 + 环境变量覆盖
-├── services.py          # Shibei 服务层（统一 API 入口）
-├── importer.py          # 文档导入器（扫描→分块→去重→存储）
-├── searcher.py          # 搜索引擎（BM25）
-├── bm25.py              # BM25 索引（SQLite FTS5）
-├── memory.py            # 对话记忆存储（AbstractMemoryStore + SQLite 实现）
-├── dreamer.py           # Dreaming 模块（知识库自主思考 + 自动整理）
-├── consolidator.py      # 相似 chunk 聚类合并
-├── chunker.py           # 文本分块（parent-child 模式）
-├── tokenizer.py         # 中文分词公共模块（jieba/bigram）
-├── parsers.py           # 文件解析器（插件化注册机制）
-├── tagger.py            # 文件标签推断
-├── llm.py               # LLM 客户端（OpenAI-compatible）
-├── manifest.py          # 导入清单（文件 hash 追踪）
-├── dedup.py             # chunk 去重（content hash）
-├── profile.py           # 多知识库 Profile 管理
-└── server.py            # MCP Server（JSON-RPC over stdio）
-
-tests/                   # 测试用例
-docs/                    # PRD、竞品对比、配置、快速开始、MCP 集成
+├── cli.py               # CLI
+├── config.py            # YAML 配置
+├── services.py          # 服务层
+├── context.py           # 答前上下文包
+├── importer.py          # 导入
+├── searcher.py          # 搜索（规则改写 → LLM 改写 → 扩展 → BM25）
+├── llm_rewriter.py      # LLM 查询改写
+├── rewriter.py          # 规则查询改写
+├── expander.py          # 同义词扩展
+├── summarizer.py        # chunk 摘要
+├── llm.py               # LLM 客户端
+├── bm25.py              # FTS5 索引
+├── memory.py            # 对话记忆
+├── related.py           # 轻量关联
+├── dreamer.py           # Dreaming
+├── consolidator.py      # 相似 chunk 合并
+├── chunker.py / tokenizer.py / parsers.py / tagger.py
+├── manifest.py / dedup.py / profile.py
+└── server.py            # MCP Server
 ```
 
 ## 开发规范
@@ -84,36 +104,34 @@ docs/                    # PRD、竞品对比、配置、快速开始、MCP 集�
 ### 代码风格
 
 - **类型注解**：所有公开函数必须有参数和返回值类型注解
-- **路径**：使用 `pathlib.Path` 而非字符串拼接
-- **日志**：核心库使用 `logging.getLogger(__name__)`，CLI 层可用 `print()`
-- **异常**：禁止 bare `except Exception: pass`，必须捕获具体异常类型并记录日志
-- **中文**：代码注释和文档使用中文，变量名和函数名使用英文
+- **路径**：使用 `pathlib.Path`
+- **日志**：核心库用 `logging.getLogger(__name__)`，CLI 可用 `print()`
+- **异常**：禁止 bare `except Exception: pass`
+- **中文**：注释和文档用中文，标识符用英文
 
 ### 架构原则
 
-1. **零 LLM 依赖**：核心功能（导入、搜索、记忆）不依赖 LLM API，LLM 仅作可选增强
-2. **轻量优先**：仅使用 SQLite FTS5，不依赖向量数据库或本地 embedding 模型
-3. **插件化**：文件解析器通过 `register_parser()` 注册，支持自定义扩展
-4. **抽象层**：`AbstractMemoryStore` 定义记忆存储接口，支持未来切换到 PostgreSQL
-5. **公共模块**：分词逻辑统一在 `tokenizer.py`，避免重复代码
+1. **零 LLM 依赖（核心路径）**：导入 / BM25 搜索 / 记忆可不依赖 LLM；LLM 仅作可选增强
+2. **轻量优先**：SQLite FTS5；向量混合为 Phase 2 可选
+3. **插件化**：`register_parser()` / `register_engine()`
+4. **公共模块**：分词统一在 `tokenizer.py`
 
 ### 安全规范
 
-- **API Key**：从环境变量 `SHIBEI_LLM_API_KEY` 读取，不写入配置文件
-- **config.yaml**：已加入 `.gitignore`，不提交到 Git
-- **SQLite**：所有连接设置 `timeout=30.0`，防止并发锁死
-- **输入验证**：`fact` 不能为空，`search` 查询有长度限制
+- API Key 仅从 `SHIBEI_LLM_API_KEY` 读取
+- `config.yaml` 不提交
+- SQLite `timeout=30.0`
+- `fact` 不能为空
 
 ### 测试规范
 
-- 测试文件放在 `tests/` 目录，命名 `test_*.py`
-- 运行测试：`python -m pytest -q`
-- 新增功能必须附带测试
+- `tests/test_*.py`
+- 运行：`PYTHONPATH=src pytest tests/ -q` 或 `python -m pytest -q`
 
 ### 配置管理
 
-- 配置文件：`config.yaml`（不提交），模板：`config.example.yaml`
-- 环境变量覆盖：`SHIBEI_CONFIG`、`SHIBEI_SOURCES`、`SHIBEI_LLM_API_KEY`
+- 模板：`config.example.yaml`
+- 环境变量：`SHIBEI_CONFIG`、`SHIBEI_SOURCES`、`SHIBEI_LLM_API_KEY`
 
 ## 常见任务
 
@@ -123,7 +141,6 @@ docs/                    # PRD、竞品对比、配置、快速开始、MCP 集�
 from shibei.parsers import register_parser
 
 def _parse_pdf(path):
-    # 实现解析逻辑
     return text
 
 register_parser(".pdf", _parse_pdf)
@@ -143,4 +160,4 @@ register_engine("my_engine", MyEngine)
 
 ### 添加新记忆存储后端
 
-继承 `AbstractMemoryStore`，实现 `add`/`search`/`list`/`delete` 方法。
+继承 `AbstractMemoryStore`，实现 `add`/`search`/`list`/`delete`。

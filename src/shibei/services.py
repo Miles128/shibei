@@ -1,8 +1,9 @@
 """Shibei 服务层 — 统一入口"""
 
 import logging
+from collections.abc import Callable
 
-from .config import Config, load_config
+from .config import load_config
 
 logger = logging.getLogger(__name__)
 
@@ -31,29 +32,55 @@ class Shibei:
             query, limit, tag, include_memories=include_memories
         )
 
+    def context(
+        self,
+        message: str,
+        limit: int = 5,
+        tag: 'str | None' = None,
+        write_hints: bool = True,
+    ) -> dict:
+        """从用户消息构建答前上下文包（文档 + 记忆 + 写侧提示）。"""
+        from .context import build_context
+        return build_context(
+            self.config,
+            message=message,
+            limit=limit,
+            tag=tag,
+            write_hints=write_hints,
+        )
+
     def import_all(self, dirs: 'list[str] | None' = None, full: bool = False,
-                   file_pattern: 'str | None' = None) -> dict:
+                   file_pattern: 'str | None' = None,
+                   progress: 'Callable[[int, int], None] | None' = None) -> dict:
         from .importer import Importer
         return Importer(self.config).run(
-            dirs, full=full, file_pattern=file_pattern
+            dirs, full=full, file_pattern=file_pattern, progress=progress
         )
 
     def list_sources(self, limit: int = 0, offset: int = 0) -> dict:
         from .importer import list_sources
         return list_sources(self.config, limit=limit, offset=offset)
 
+    def clean_orphans(
+        self,
+        dirs: 'list[str] | None' = None,
+        dry_run: bool = False,
+    ) -> dict:
+        from .importer import clean_orphans
+        return clean_orphans(self.config, dirs=dirs, dry_run=dry_run)
+
     def dream(
         self,
-        format: str = "full",
-        persist: bool = True,
         housekeeping: 'dict | None' = None,
+        format: str = "brief",
+        persist: bool = True,
     ) -> dict:
         from .dreamer import dream
         return dream(
             self.config.db_path_expanded,
+            housekeeping=housekeeping,
             format=format,
             persist=persist,
-            housekeeping=housekeeping,
         )
 
     # ---------- 对话记忆 ----------
@@ -116,14 +143,16 @@ class Shibei:
         threshold: float = 0.6,
         min_cluster_size: int = 2,
         max_chunks: int = 500,
+        apply: bool = False,
     ) -> dict:
-        """整理知识库：发现相似 chunk 聚类（零 LLM 依赖）。"""
+        """整理知识库：发现相似 chunk 聚类，可选直接合并（零 LLM 依赖）。"""
         from .consolidator import consolidate
         return consolidate(
             self.config.db_path_expanded,
             threshold=threshold,
             min_cluster_size=min_cluster_size,
             max_chunks=max_chunks,
+            apply=apply,
         )
 
     def apply_consolidation(self, clusters: list[dict]) -> dict:

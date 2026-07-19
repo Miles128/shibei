@@ -3,6 +3,7 @@
 import argparse
 import sys
 import os
+from pathlib import Path
 
 from .config import load_config
 from .services import Shibei
@@ -23,9 +24,82 @@ def cmd_serve(args):
     server_main()
 
 
+def cmd_context(args):
+    """答前上下文包：从用户消息抽词并召回文档/记忆"""
+    brain = Shibei(args.resolved_config)
+    pack = brain.context(
+        message=args.message,
+        limit=args.limit,
+        tag=args.tag,
+        write_hints=not args.no_write_hints,
+    )
+
+    print(f"query_used: {pack.get('query_used', '')}")
+    print(f"hits: {pack.get('total', 0)}")
+    print()
+    for r in pack.get("results", []):
+        print(f"[{r.get('rank', '-')}] {r.get('source')} (score={r.get('score')})")
+        print(f"    {(r.get('text') or '').replace(chr(10), ' ')}")
+        print()
+    if pack.get("memories"):
+        print("🧠 相关记忆：")
+        for m in pack["memories"]:
+            print(f"  [{m.get('category', '')}] {m.get('text')} (score={m.get('score')})")
+        print()
+    hint = pack.get("suggest_remember") or {}
+    if hint.get("should"):
+        print("💡 suggest_remember:")
+        print(f"   reason: {hint.get('reason')}")
+        print(f"   fact: {hint.get('fact')}")
+
+
 def cmd_search(args):
     brain = Shibei(args.resolved_config)
+
+    # 命令行参数可临时覆盖配置文件中的 expander/rewriter 设置
+    if args.rewrite:
+        brain.config.rewriter.enabled = True
+    if getattr(args, "llm_rewrite", False):
+        brain.config.rewriter.enabled = True
+        brain.config.rewriter.use_llm = True
+    if args.expand:
+        brain.config.expander.enabled = True
+    if args.no_expand:
+        brain.config.expander.enabled = False
+    if args.synonyms:
+        brain.config.expander.synonyms_path = args.synonyms
+        brain.config.expander.enabled = True
+    if args.fuzzy:
+        brain.config.expander.fuzzy = True
+        brain.config.expander.enabled = True
+
     results = brain.search(args.query, limit=args.limit, tag=args.tag)
+
+    # 展示查询改写信息
+    rewrite = results.get("rewrite")
+    if rewrite and rewrite.get("applied"):
+        print("✏️ 查询改写:")
+        for r in rewrite["applied"]:
+            print(f"  {r['from']} → {r['to']}")
+        print()
+
+    llm_rewrite = results.get("llm_rewrite")
+    if llm_rewrite and llm_rewrite.get("applied"):
+        print(f"🤖 LLM 改写: {llm_rewrite.get('rewritten')}")
+        print()
+
+    # 展示查询扩展信息
+    expansion = results.get("expansion")
+    if expansion and (expansion.get("expansions") or expansion.get("fuzzy")):
+        print("🔍 查询扩展:")
+        if expansion.get("expansions"):
+            for word, syns in expansion["expansions"].items():
+                print(f"  {word} → {', '.join(syns)}")
+        if expansion.get("fuzzy"):
+            for word, candidates in expansion["fuzzy"].items():
+                print(f"  {word} ~ {', '.join(candidates)}")
+        print()
+
     for r in results["results"]:
         print(f"[{r['rank']}] {r['source']} (score={r['score']}, tags={r['tags']})")
         print(f"    {r['text'].replace(chr(10), ' ')}")
@@ -51,6 +125,20 @@ def cmd_remember(args):
     print(f"   {result['fact']}")
     if result.get("supersedes"):
         print(f"   ↳ 替代了旧记忆 {result['supersedes'][:8]}")
+
+
+def cmd_update_memory(args):
+    """更新/压缩一条已有记忆（MCP: shibei_update_memory）"""
+    brain = Shibei(args.resolved_config)
+    ok = brain.update_memory(
+        memory_id=args.memory_id,
+        fact=args.fact,
+        tags=args.tags,
+    )
+    if ok:
+        print(f"✅ 已更新记忆 {args.memory_id}")
+    else:
+        print(f"❌ 未找到记忆 {args.memory_id}")
 
 
 def cmd_memories_list(args):
@@ -109,9 +197,36 @@ def cmd_memories_forget(args):
 
 def cmd_import(args):
     brain = Shibei(args.resolved_config)
-    dirs = args.dirs.split(",") if args.dirs else None
-    result = brain.import_all(dirs=dirs, full=args.full,
-                              file_pattern=args.file_pattern)
+    # 支持两种来源指定方式：
+    # 1. 位置参数：shibei import ~/notes ~/articles
+    # 2. --dirs：shibei import --dirs ~/notes,~/articles
+    dirs = None
+    if args.paths:
+        dirs = list(args.paths)
+    elif args.dirs:
+        dirs = [d.strip() for d in args.dirs.split(",") if d.strip()]
+
+    # 文件级进度条；tqdm 未安装时优雅降级
+    try:
+        from tqdm import tqdm
+    except ImportError:
+        tqdm = None  # type: ignore[misc]
+
+    progress = tqdm(total=None, unit="file", desc="导入文件") if tqdm else None
+    try:
+        def _update(current: int, total: int) -> None:
+            if progress is not None:
+                progress.total = total
+                progress.update(current - progress.n)
+
+        result = brain.import_all(
+            dirs=dirs, full=args.full, file_pattern=args.file_pattern,
+            progress=_update,
+        )
+    finally:
+        if progress is not None:
+            progress.close()
+
     parts = [f"{result['files']} files → {result['chunks']} chunks"]
     if result.get("skipped"):
         parts.append(f"{result['skipped']} skipped")
@@ -130,11 +245,38 @@ def cmd_list(args):
         print(f"  {s}")
 
 
+def cmd_clean(args):
+    """清理源文件已删除的 orphan chunks"""
+    brain = Shibei(args.resolved_config)
+    dirs = None
+    if args.paths:
+        dirs = list(args.paths)
+    elif args.dirs:
+        dirs = [d.strip() for d in args.dirs.split(",") if d.strip()]
+    result = brain.clean_orphans(dirs=dirs, dry_run=args.dry_run)
+
+    prefix = "[dry-run] " if args.dry_run else ""
+    if result["removed"] == 0:
+        print(f"{prefix}没有 orphan chunks")
+        return
+
+    print(f"{prefix}发现 {result['removed']} 个 orphan chunks：")
+    for fp in result["orphans"]:
+        print(f"  {fp}")
+    if not args.dry_run:
+        print("已删除")
+
+
 def cmd_dream(args):
     """执行 dreaming — 默认行为"""
     brain = Shibei(args.resolved_config)
     housekeeping = False if getattr(args, "no_housekeeping", False) else {}
-    result = brain.dream(housekeeping=housekeeping)
+    persist = not getattr(args, "no_persist", False)
+    result = brain.dream(
+        housekeeping=housekeeping,
+        format=args.format,
+        persist=persist,
+    )
 
     if result["status"] == "empty":
         print("知识库为空，先运行 shibei import")
@@ -146,13 +288,13 @@ def cmd_dream(args):
     print(f"   发现 {stats['cross_references']} 个跨文档连接, {stats['topics_with_connections']} 个共享主题")
     print()
 
-    if result["insights"]:
+    if result.get("insights"):
         print("📊 洞察：")
         for insight in result["insights"]:
             print(f"  • {insight}")
         print()
 
-    if result["cross_references"]:
+    if result.get("cross_references"):
         print("🔗 跨文档连接 (Top 10)：")
         for ref in result["cross_references"][:10]:
             kw_str = ", ".join(ref["shared_keywords"][:3])
@@ -160,7 +302,7 @@ def cmd_dream(args):
             print(f"    关键词: {kw_str} (强度={ref['strength']})")
         print()
 
-    if result["patterns"]:
+    if result.get("patterns"):
         print("🏷️  标签模式：")
         for tag, kws in result["patterns"].items():
             print(f"  [{tag}] {', '.join(kws)}")
@@ -181,102 +323,15 @@ def cmd_dream(args):
         if mem.get("error") or cons.get("error"):
             print(f"  部分整理失败，详见日志")
 
-    # 增量对比
-    diff = result.get("diff")
-    if diff and "message" not in diff:
-        print()
-        print("📈 增量变化（vs 上次 dream）：")
-        delta = diff.get("stats_delta", {})
-        delta_parts = []
-        for k, v in delta.items():
-            sign = "+" if v > 0 else ""
-            delta_parts.append(f"{k} {sign}{v}")
-        if delta_parts:
-            print(f"  统计：{', '.join(delta_parts)}")
-        if diff.get("new_connections"):
-            print(f"  🆕 新增连接：{', '.join(diff['new_connections'][:3])}")
-        if diff.get("lost_connections"):
-            print(f"  ❌ 消失连接：{', '.join(diff['lost_connections'][:3])}")
-        if diff.get("new_topics"):
-            print(f"  🆕 新增主题：{', '.join(diff['new_topics'][:3])}")
-        if diff.get("new_insights"):
-            print(f"  🆕 新洞察：{diff['new_insights'][0]}")
-
-
-def cmd_dream_compress(args):
-    """压缩历史 dream 记录"""
-    from .config import load_config
-    from .dreamer import compress_dreams
-
-    cfg = load_config(args.resolved_config)
-    result = compress_dreams(cfg.db_path_expanded, keep_recent=args.keep)
-    print(f"📦 Dream 历史压缩完成")
-    print(f"   总记录: {result['total']}")
-    print(f"   保留完整: {result['kept_full']}")
-    print(f"   压缩为摘要: {result['compressed']}")
-
-
-def cmd_dream_clean(args):
-    """清理旧 dream 记录"""
-    from .config import load_config
-    from .dreamer import clean_old_dreams
-
-    cfg = load_config(args.resolved_config)
-    result = clean_old_dreams(cfg.db_path_expanded, max_age_days=args.days)
-    print(f"🧹 Dream 历史清理完成")
-    print(f"   删除: {result['deleted']} 条（超过 {args.days} 天）")
-    print(f"   剩余: {result['remaining']} 条")
-
-
-def cmd_dream_history(args):
-    """查看 dream 历史"""
-    from .config import load_config
-    from .dreamer import list_dreams
-
-    cfg = load_config(args.resolved_config)
-    dreams = list_dreams(cfg.db_path_expanded)
-    if not dreams:
-        print("暂无 dream 历史，运行 shibei dream run")
-        return
-    print(f"Dream 历史（{len(dreams)} 条）：")
-    for d in dreams:
-        stats = d.get("stats", {})
-        ts = d.get("timestamp", "unknown")
-        chunks = stats.get("total_chunks", "?")
-        refs = stats.get("cross_references", "?")
-        compressed = " (compressed)" if d.get("compressed") else ""
-        print(f"  {ts}  chunks={chunks}, refs={refs}{compressed}  [{d['file']}]")
-
-
-def cmd_dream_diff(args):
-    """查看与上次 dream 的对比"""
-    from .config import load_config
-    from .dreamer import load_last_dream
-
-    cfg = load_config(args.resolved_config)
-    last = load_last_dream(cfg.db_path_expanded)
-    if not last:
-        print("无历史 dream 记录，先运行 shibei dream run")
-        return
-
-    print(f"上次 dream: {last.get('timestamp', 'unknown')}")
-    stats = last.get("stats", {})
-    print(f"  chunks: {stats.get('total_chunks', '?')}")
-    print(f"  docs: {stats.get('unique_docs', '?')}")
-    print(f"  cross_refs: {stats.get('cross_references', '?')}")
-    if last.get("insights"):
-        print("\n洞察：")
-        for ins in last["insights"][:5]:
-            print(f"  • {ins}")
-
 
 def cmd_consolidate(args):
-    """整理知识库：发现相似 chunk 候选"""
+    """整理知识库：发现相似 chunk 候选，可选直接合并"""
     brain = Shibei(args.resolved_config)
     result = brain.consolidate(
         threshold=args.threshold,
         min_cluster_size=args.min_size,
         max_chunks=args.max_chunks,
+        apply=args.apply,
     )
 
     if result["status"] == "empty":
@@ -286,11 +341,22 @@ def cmd_consolidate(args):
     print(f"🧹 整理完成")
     print(f"   共扫描 {result['total_chunks']} 个 chunks")
     print(f"   发现 {result['cluster_count']} 组相似内容")
+
+    if args.apply and "applied" in result:
+        applied = result["applied"]
+        if applied.get("applied"):
+            print(f"   已合并：删除 {applied['removed']} 条，插入 {applied['inserted']} 条")
+        elif applied.get("error"):
+            print(f"   ⚠️ 合并失败: {applied['error']}")
     print()
 
     for i, cluster in enumerate(result["clusters"], 1):
         print(f"--- 组 {i} ({cluster['size']} 条) ---")
         print(f"来源: {', '.join(cluster['sources'])}")
+        if cluster.get("summary"):
+            print("合并摘要:")
+            for line in cluster["summary"].split("\n")[:3]:
+                print(f"  • {line[:120]}")
         print("原始片段:")
         for c in cluster["chunks"][:3]:
             print(f"  • [{Path(c['source']).name}] {c['text'][:120]}...")
@@ -303,6 +369,30 @@ def cmd_consolidate(args):
             encoding="utf-8",
         )
         print(f"💾 结果已保存到 {args.output}")
+
+
+def cmd_apply_consolidation(args):
+    """根据外部摘要直接合并相似 chunk（MCP: shibei_apply_consolidation）"""
+    import json
+
+    brain = Shibei(args.resolved_config)
+    payload = json.loads(Path(args.input).read_text(encoding="utf-8"))
+    # 支持完整的 consolidate 输出 JSON，也支持裸 clusters 列表
+    clusters = payload.get("clusters", payload) if isinstance(payload, dict) else payload
+    if not isinstance(clusters, list):
+        print("❌ 输入文件格式错误：clusters 应为列表")
+        sys.exit(1)
+
+    result = brain.apply_consolidation(clusters=clusters)
+    if result["applied"]:
+        print(f"✅ 已应用合并")
+        print(f"   删除 {result['removed']} 个 chunk，插入 {result['inserted']} 个摘要")
+    else:
+        print(f"❌ 未应用合并")
+    if result.get("invalid_clusters"):
+        print(f"   无效 cluster: {result['invalid_clusters']} 个")
+    if result.get("error"):
+        print(f"   错误: {result['error']}")
 
 
 def cmd_profile_list(args):
@@ -428,20 +518,48 @@ def main():
     p = sub.add_parser("serve", help="启动 MCP stdio server")
     p.add_argument("--debug", action="store_true", help="显示 stderr 日志")
 
+    # context
+    p_ctx = sub.add_parser("context", help="答前上下文包（从用户消息召回文档+记忆）")
+    p_ctx.add_argument("message", help="用户消息原文")
+    p_ctx.add_argument("--limit", type=int, default=5)
+    p_ctx.add_argument("--tag", help="标签过滤")
+    p_ctx.add_argument("--no-write-hints", action="store_true",
+                       help="不返回 suggest_remember")
+
     # search
     p = sub.add_parser("search", help="语义搜索")
     p.add_argument("query", help="搜索关键词")
     p.add_argument("--limit", type=int, default=5)
     p.add_argument("--tag", help="标签过滤")
+    p.add_argument("--rewrite", action="store_true",
+                   help="启用查询改写（效果等同配置 rewriter.enabled=true）")
+    p.add_argument("--llm-rewrite", action="store_true",
+                   help="启用 LLM 查询改写（需 SHIBEI_LLM_API_KEY）")
+    p.add_argument("--expand", action="store_true",
+                   help="启用同义词表查询扩展（效果等同配置 expander.enabled=true）")
+    p.add_argument("--no-expand", action="store_true",
+                   help="禁用查询扩展（覆盖配置文件）")
+    p.add_argument("--synonyms", help="外部同义词表路径（YAML/JSON），临时启用扩展")
+    p.add_argument("--fuzzy", action="store_true",
+                   help="启用编辑距离模糊匹配兜底")
 
     # import
     p_import = sub.add_parser("import", help="全量导入文档")
+    p_import.add_argument("paths", nargs="*", help="要扫描的目录或文件路径（可多个），默认用 config sources")
     p_import.add_argument("--full", action="store_true", help="全量重建（忽略 manifest，重新导入所有文件）")
-    p_import.add_argument("--dirs", help="要扫描的目录（逗号分隔），默认用 config sources")
+    p_import.add_argument("--dirs", help="要扫描的目录（逗号分隔，与位置参数二选一），默认用 config sources")
     p_import.add_argument("--file-pattern", help="文件名 glob 过滤（如 'README*'）")
 
     # list
     sub.add_parser("list", help="列出已入库文件")
+
+    # clean
+    p_clean = sub.add_parser("clean", help="清理源文件已删除的 orphan chunks")
+    p_clean.add_argument("paths", nargs="*", help="逗号分隔的扫描目录（可多个），默认用配置中的 sources")
+    p_clean.add_argument("--dirs", default=None,
+                         help="逗号分隔的扫描目录（与位置参数二选一），默认用配置中的 sources")
+    p_clean.add_argument("--dry-run", action="store_true",
+                         help="只报告不删除")
 
     # remember
     p_remember = sub.add_parser("remember", help="写入一条 Agent 对话记忆")
@@ -452,6 +570,12 @@ def main():
     p_remember.add_argument("--source", default="", help="来源会话ID")
     p_remember.add_argument("--tags", default="", help="逗号分隔标签")
     p_remember.add_argument("--expires-at", default=None, help="过期时间 ISO 8601")
+
+    # update-memory
+    p_update = sub.add_parser("update-memory", help="更新/压缩一条已有记忆（MCP: shibei_update_memory）")
+    p_update.add_argument("memory_id", help="记忆 ID（可只给前 8 位）")
+    p_update.add_argument("--fact", required=True, help="新的记忆内容")
+    p_update.add_argument("--tags", default=None, help="逗号分隔的新标签")
 
     # memories（子命令组）
     p_memories = sub.add_parser("memories", help="管理对话记忆")
@@ -485,25 +609,24 @@ def main():
                                help="最大扫描 chunk 数（默认 500）")
     p_consolidate.add_argument("--output", default=None,
                                help="输出合并报告到 JSON 文件")
+    p_consolidate.add_argument("--apply", action="store_true",
+                               help="直接应用启发式合并（无需外部 Agent 提供摘要）")
 
-    # dream（子命令组）
+    # apply-consolidation
+    p_apply = sub.add_parser("apply-consolidation",
+                             help="根据外部摘要直接合并相似 chunk（MCP: shibei_apply_consolidation）")
+    p_apply.add_argument("input", help="包含 clusters 的 JSON 文件路径")
+
+    # dream
     p_dream = sub.add_parser("dream", help="知识库 dreaming — 发现隐藏连接与洞察")
-    p_dream_sub = p_dream.add_subparsers(dest="dream_cmd")
-
-    p_dream_run = p_dream_sub.add_parser("run", help="执行 dreaming（默认）")
-    p_dream_run.add_argument("--no-housekeeping", action="store_true",
-                             help="禁用整理（记忆清理/候选识别）")
-
-    p_dream_compress = p_dream_sub.add_parser("compress", help="压缩历史 dream 记录")
-    p_dream_compress.add_argument("--keep", type=int, default=5,
-                                  help="保留最近 N 次完整记录（默认 5）")
-
-    p_dream_clean = p_dream_sub.add_parser("clean", help="清理旧 dream 记录")
-    p_dream_clean.add_argument("--days", type=int, default=90,
-                               help="删除超过 N 天的记录（默认 90）")
-
-    p_dream_sub.add_parser("history", help="查看 dream 历史")
-    p_dream_sub.add_parser("diff", help="查看与上次 dream 的对比")
+    p_dream.add_argument("--no-housekeeping", action="store_true",
+                         help="禁用整理（记忆清理/候选识别）")
+    p_dream.add_argument("--format", choices=["brief", "full"], default="brief",
+                         help="输出格式：brief=摘要（默认），full=含跨文档连接与标签模式")
+    p_dream.add_argument("--persist", action="store_true", default=True,
+                         help="持久化结果到 db_path/dream_result.json（默认开启）")
+    p_dream.add_argument("--no-persist", action="store_true",
+                         help="不持久化结果")
 
     # profile
     p_profile = sub.add_parser("profile", help="管理配置 profile")
@@ -562,24 +685,20 @@ def main():
 
     # Core commands
     if args.cmd == "dream":
-        # dream 子命令组
-        dream_cmd = getattr(args, "dream_cmd", None) or "run"
-        {
-            "run": cmd_dream,
-            "compress": cmd_dream_compress,
-            "clean": cmd_dream_clean,
-            "history": cmd_dream_history,
-            "diff": cmd_dream_diff,
-        }.get(dream_cmd, cmd_dream)(args)
+        cmd_dream(args)
         return
 
     {
         "serve": cmd_serve,
+        "context": cmd_context,
         "search": cmd_search,
         "import": cmd_import,
         "list": cmd_list,
+        "clean": cmd_clean,
         "remember": cmd_remember,
+        "update-memory": cmd_update_memory,
         "consolidate": cmd_consolidate,
+        "apply-consolidation": cmd_apply_consolidation,
     }[args.cmd](args)
 
 

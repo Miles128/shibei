@@ -15,6 +15,9 @@ logger = logging.getLogger(__name__)
 class SearchEngine(ABC):
     """搜索引擎策略接口。"""
 
+    def __init__(self, cfg: Config):
+        self.cfg = cfg
+
     @abstractmethod
     def search(self, query: str, limit: int, tag: 'str | None' = None) -> dict:
         """执行搜索，返回 {"query": ..., "total": ..., "results": [...]}。"""
@@ -28,9 +31,67 @@ class BM25Engine(SearchEngine):
         self.cfg = cfg
 
     def search(self, query: str, limit: int, tag: 'str | None' = None) -> dict:
+        from .tokenizer import tokenize_query
+
+        expansion = None
+        rewrite_info = None
+        llm_rewrite_info = None
+        effective_query = query
+
+        if self.cfg.rewriter.enabled:
+            from .rewriter import QueryRewriter
+            rewriter = QueryRewriter(self.cfg.rewriter.rules)
+            rewrite_info = rewriter.rewrite(query)
+            effective_query = rewrite_info["rewritten"]
+            if effective_query != query:
+                logger.debug("规则改写查询: %s -> %s", query, effective_query)
+
+            if self.cfg.rewriter.use_llm:
+                from .llm_rewriter import LLMQueryRewriter
+                llm_rewriter = LLMQueryRewriter(
+                    self.cfg.llm,
+                    max_terms=self.cfg.rewriter.max_terms,
+                )
+                llm_rewrite_info = llm_rewriter.rewrite(effective_query)
+                if llm_rewrite_info.get("applied") and llm_rewrite_info.get("rewritten"):
+                    effective_query = llm_rewrite_info["rewritten"]
+                    logger.debug(
+                        "LLM 改写查询: %s -> %s",
+                        rewrite_info["rewritten"],
+                        effective_query,
+                    )
+
+        tokenized_query = tokenize_query(effective_query)
+
+        if self.cfg.expander.enabled:
+            from .expander import QueryExpander
+            expander = QueryExpander(
+                synonyms_path=self.cfg.expander.synonyms_path or None,
+                fuzzy=self.cfg.expander.fuzzy,
+                fuzzy_max_distance=self.cfg.expander.fuzzy_max_distance,
+                fuzzy_max_candidates=self.cfg.expander.fuzzy_max_candidates,
+                min_query_len=self.cfg.expander.min_query_len,
+            )
+            expansion = expander.expand(effective_query)
+            if expansion["expanded"]:
+                tokenized_query = tokenize_query(expansion["expanded"])
+                logger.debug("扩展查询: %s -> %s", effective_query, expansion["expanded"])
+
         bm25 = BM25Index(str(self.cfg.db_path_expanded / "fts5.db"))
-        results = bm25.search(query, limit, tag)
-        return {"query": query, "total": len(results), "results": results}
+        results = bm25.search(query, limit, tag, tokenized_query=tokenized_query)
+        result = {
+            "query": query,
+            "query_used": effective_query,
+            "total": len(results),
+            "results": results,
+        }
+        if rewrite_info:
+            result["rewrite"] = rewrite_info
+        if llm_rewrite_info:
+            result["llm_rewrite"] = llm_rewrite_info
+        if expansion:
+            result["expansion"] = expansion
+        return result
 
 
 _ENGINES: dict[str, type[SearchEngine]] = {

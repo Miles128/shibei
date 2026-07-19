@@ -7,6 +7,9 @@
 """
 
 import logging
+import os
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from .config import Config
@@ -15,6 +18,7 @@ from .manifest import Manifest
 from .parsers import parse_file
 from .dedup import ChunkHashStore, content_hash, dedup_chunks
 from .chunker import chunk_text, ChildChunk
+from .summarizer import ChunkSummarizer
 
 logger = logging.getLogger(__name__)
 
@@ -29,15 +33,18 @@ class Importer:
     def __init__(self, cfg: Config):
         self.cfg = cfg
         self.tagger = Tagger(cfg.tagging)
+        self.summarizer = ChunkSummarizer(cfg.llm)
 
     def run(self, dirs: 'list[str] | None' = None, full: bool = False,
-            file_pattern: 'str | None' = None) -> dict:
+            file_pattern: 'str | None' = None,
+            progress: 'Callable[[int, int], None] | None' = None) -> dict:
         """导入文档。
 
         Args:
             dirs: 要扫描的目录。None 则用 config 中的 sources。
             full: True 全量重建，False 增量导入（默认）。
             file_pattern: 文件名 glob 过滤（如 'README*'），None 不过滤。
+            progress: 进度回调，参数为 (current, total)，按文件触发。
 
         Returns:
             {"files": N, "chunks": N, "skipped": N, "removed": N,
@@ -47,13 +54,13 @@ class Importer:
         scan_dirs = dirs or self.cfg.sources
         extensions = set(self.cfg.extensions)
         ignore_dirs = {str(item).strip() for item in self.cfg.ignore_dirs if str(item).strip()}
-        files = []
+        files: list[Path] = []
         warnings: list[str] = []
         for d in scan_dirs:
             p = Path(d).expanduser()
             if p.exists():
                 for ext in extensions:
-                    candidates = p.rglob(f"*{ext}")
+                    candidates: list[Path] = list(p.rglob(f"*{ext}"))
                     if file_pattern:
                         candidates = [f for f in candidates
                                       if fnmatch.fnmatch(f.name, file_pattern)]
@@ -68,7 +75,7 @@ class Importer:
 
         if full:
             to_add = list(current_files.values())
-            to_update = []
+            to_update: list[Path] = []
             to_remove = list(manifest.all_paths() - set(current_files.keys()))
         else:
             to_add, to_update, to_remove = manifest.classify(current_files)
@@ -76,18 +83,41 @@ class Importer:
         changed = to_add + to_update
         skipped = len(current_files) - len(changed)
 
-        # 分块 + 标签（仅处理变更文件）
-        # chunks_data 结构：(source, file_path, tags, content, parent_text, parent_id)
+        # 并行解析文件（IO 密集型），再串行分块 + 标签
+        # chunks_data 结构：(source, file_path, tags, content, parent_text, parent_id, summary)
         # parent_text/parent_id 在 parent_window=0 时为空字符串
-        chunks_data = []
+        # summary 默认空字符串，LLM 启用且调用成功时填充
+        chunks_data: list[tuple[str, str, str, str, str, str, str]] = []
         ck = self.cfg.chunking
-        for f in changed:
+
+        def _parse_one(path: Path) -> tuple[Path, str] | tuple[Path, Exception]:
             try:
-                content = parse_file(f)
+                return path, parse_file(path)
             except (ValueError, OSError, UnicodeDecodeError) as e:
-                warnings.append(f"文件解析失败: {f} ({e})")
-                logger.warning("文件解析失败: %s (%s)", f, e)
+                return path, e
+            except Exception as e:  # 自定义 parser 异常不中断整批导入
+                logger.exception("解析文件时发生未预期异常: %s", path)
+                return path, e
+
+        parsed_results: list[tuple[Path, str] | tuple[Path, Exception]] = []
+        if changed:
+            # IO 密集型：默认线程数参考 concurrent.futures 推荐值
+            max_workers = min(32, (os.cpu_count() or 1) + 4)
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                parsed_results = list(executor.map(_parse_one, changed))
+
+        if progress is not None:
+            progress(0, len(changed))
+
+        for idx, (f, result) in enumerate(parsed_results, start=1):
+            if isinstance(result, Exception):
+                warnings.append(f"文件解析失败: {f} ({result})")
+                logger.warning("文件解析失败: %s (%s)", f, result)
+                if progress is not None:
+                    progress(idx, len(changed))
                 continue
+
+            content = result
             tags = self.tagger.infer(f, content)
             slug = str(f)
             chunks = chunk_text(
@@ -101,17 +131,31 @@ class Importer:
             )
             if ck.parent_window > 0 and chunks and isinstance(chunks[0], ChildChunk):
                 # parent-child 模式
-                for cc in chunks:
+                child_chunks: list[ChildChunk] = chunks  # type: ignore[assignment]
+                for cc in child_chunks:
                     chunks_data.append(
                         (slug, str(f), ",".join(tags),
-                         cc.text, cc.parent_text, cc.parent_id)
+                         cc.text, cc.parent_text, cc.parent_id, "")
                     )
             else:
                 # 普通模式
-                for chunk_text_str in chunks:
+                plain_chunks: list[str] = chunks  # type: ignore[assignment]
+                for chunk_text_str in plain_chunks:
                     chunks_data.append(
-                        (slug, str(f), ",".join(tags), chunk_text_str, "", "")
+                        (slug, str(f), ",".join(tags), chunk_text_str, "", "", "")
                     )
+
+            if progress is not None:
+                progress(idx, len(changed))
+
+        # 为每个 chunk 生成一句话中文摘要（LLM 失败时降级为空字符串）
+        # chunks_data 元组已是 7 字段：(source, file_path, tags, content, parent_text, parent_id, summary_placeholder)
+        # 此处把占位的第 7 位替换为真正的 summarize 结果
+        chunks_data = [
+            (source, file_path, tags, content, parent_text, parent_id,
+             self.summarizer.summarize(content))
+            for source, file_path, tags, content, parent_text, parent_id, _placeholder in chunks_data
+        ]
 
         # 精确去重：跳过内容完全相同的 chunk
         hash_store = ChunkHashStore(self.cfg.db_path_expanded)
@@ -131,14 +175,16 @@ class Importer:
             chunks_data, hash_store.all_hashes()
         )
         # 记录新增 hash 到 store（首次出现的 source）
-        for source, file_path, tags, content, _parent_text, _parent_id in unique_chunks:
+        for source, file_path, tags, content, _parent_text, _parent_id, _summary in unique_chunks:
             h = content_hash(content)
             if not hash_store.has(h):
                 hash_store.add(h, source)
 
         chunks_data = unique_chunks
 
-        self._import_bm25(chunks_data, to_remove)
+        # 需要清理旧 chunk 的 source：已删除文件 + 内容变更文件
+        sources_to_clear = list(to_remove) + [str(f) for f in to_update]
+        self._import_bm25(chunks_data, sources_to_clear)
 
         # manifest 统一更新一次
         for fp in to_remove:
@@ -154,7 +200,7 @@ class Importer:
             "files": len(changed),
             "chunks": len(chunks_data),
             "skipped": skipped,
-            "removed": len(to_remove),
+            "removed": len(sources_to_clear),
             "deduped": deduped,
             "status": "ok",
         }
@@ -162,20 +208,68 @@ class Importer:
             result["warnings"] = warnings
         return result
 
-    def _import_bm25(self, chunks_data: list, to_remove: list[str]):
-        """把分块写入 BM25 索引，并删除已移除文件的旧 chunk。"""
+    def _import_bm25(self, chunks_data: list, sources_to_clear: list[str]):
+        """把分块写入 BM25 索引，并删除已移除/变更文件的旧 chunk。"""
         from .bm25 import BM25Index
 
         db_path = self.cfg.db_path_expanded / "fts5.db"
         bm25 = BM25Index(str(db_path))
 
-        # 删除已移除/变更文件的旧 chunk
-        for fp in to_remove:
-            bm25.remove_by_source(fp)
-        # 变更文件会在 remove_by_source 中删除旧 chunk，然后下面 add_batch 写入新 chunk
+        # 批量删除旧 chunk（整传入 list，避免按字符拆分）
+        if sources_to_clear:
+            bm25.remove_sources(sources_to_clear)
 
         if chunks_data:
             bm25.add_batch(chunks_data)
+
+
+def clean_orphans(
+    cfg: Config,
+    dirs: 'list[str] | None' = None,
+    dry_run: bool = False,
+) -> dict:
+    """清理源文件已删除但数据库中仍残留的 orphan chunks。
+
+    Args:
+        cfg: 配置
+        dirs: 要扫描的目录。None 则用 config 中的 sources。
+        dry_run: True 只报告不删除
+
+    Returns:
+        {"orphans": [file_path, ...], "removed": int, "dry_run": bool}
+    """
+    scan_dirs = dirs or cfg.sources
+    extensions = set(cfg.extensions)
+    ignore_dirs = {str(item).strip() for item in cfg.ignore_dirs if str(item).strip()}
+
+    files: list[Path] = []
+    for d in scan_dirs:
+        p = Path(d).expanduser()
+        if p.exists():
+            for ext in extensions:
+                candidates: list[Path] = list(p.rglob(f"*{ext}"))
+                files.extend(
+                    f for f in candidates if not _path_under_ignored_dir(f, ignore_dirs)
+                )
+
+    current_files = {str(f) for f in files}
+    manifest = Manifest(cfg.db_path_expanded)
+    known_paths = manifest.all_paths()
+    orphans = sorted(known_paths - current_files)
+
+    if not orphans:
+        return {"orphans": [], "removed": 0, "dry_run": dry_run}
+
+    if not dry_run:
+        from .bm25 import BM25Index
+        db_path = cfg.db_path_expanded / "fts5.db"
+        bm25 = BM25Index(str(db_path))
+        bm25.remove_sources(orphans)
+        for fp in orphans:
+            manifest.remove(fp)
+        manifest.save()
+
+    return {"orphans": orphans, "removed": len(orphans), "dry_run": dry_run}
 
 
 def list_sources(config: Config, limit: int = 0, offset: int = 0) -> dict:

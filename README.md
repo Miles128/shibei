@@ -1,8 +1,8 @@
-# 🧠 Shibei
+# 拾贝（Shibei）
 
 **中文轻量知识库 + Agent 长期记忆 —— 给 AI Agent 用的外部大脑。**
 
-> 扫描 Markdown/Word/Excel/TXT → 自动摘要 → 中文语义分块 → BM25 全文检索 → Agent 随时搜索
+> 扫描 Markdown/Word/Excel/TXT → 中文语义分块 → BM25 全文检索 + 近义词/LLM 改写 → Agent 答前强制召回
 
 ## 30 秒上手
 
@@ -18,7 +18,7 @@ shibei serve                    # 启动 MCP server
 
 | 接口 | 命令 | 谁用 |
 |------|------|------|
-| CLI | `shibei search/import/list/remember` | 人 |
+| CLI | `shibei context/search/import/list/remember` | 人 |
 | MCP | `shibei serve` | AI Agent |
 | Python | `from shibei import Shibei` | 开发者 |
 
@@ -46,17 +46,6 @@ extensions:
   - .csv
 ```
 
-### 一句话摘要 + BM25 召回
-
-导入时自动为每个 chunk 生成一句话中文摘要，同时建立**正文索引**和**摘要索引**。搜索时两边一起召回，命中率和语义覆盖度显著提升，最终返回给 LLM 的仍是原始正文。
-
-```yaml
-# config.yaml（默认已开启）
-summarize:
-  enabled: true
-  max_length: 100
-```
-
 ### BM25 全文搜索
 
 基于 SQLite FTS5，零外部依赖、速度快、可解释。
@@ -65,6 +54,66 @@ summarize:
 # config.yaml
 storage:
   path: ~/.shibei/db
+```
+
+### 自动摘要（可选 LLM）
+
+导入时为每个 chunk 自动生成一句话中文摘要，摘要内容会建立独立的 FTS5 索引，搜索时与正文 RRF 融合召回：
+
+```bash
+export SHIBEI_LLM_API_KEY="sk-..."
+shibei import
+```
+
+```yaml
+llm:
+  enabled: true
+  base_url: "https://api.openai.com/v1"
+  model: "gpt-4o-mini"
+  max_content_length: 1000   # 输入 chunk 最大字符数
+  max_summary_length: 50     # 期望摘要最大字数
+```
+
+- API key 仅通过 `SHIBEI_LLM_API_KEY` 环境变量读取，不写入配置文件
+- 摘要生成失败时自动降级为空字符串，不会阻断导入
+- 默认关闭，不影响零 LLM 依赖的搜索体验
+
+### 答前上下文（多宿主强制召回）
+
+Agent 不应靠「想起来再搜」。挂载 MCP 后，非纯指令类用户消息应先调 `shibei_context`：
+
+```bash
+shibei context "讲讲我面试里的 Redis"
+```
+
+返回文档命中、相关记忆，以及 `suggest_remember`（是否建议写入记忆）。契约详见 [docs/MCP_INTEGRATION.md](docs/MCP_INTEGRATION.md) 与 [agent.md](agent.md)。
+
+### 查询改写与扩展
+
+搜索管线：`规则改写 → LLM 关键词改写（可选）→ 同义词扩展 → BM25`。
+
+```yaml
+rewriter:
+  enabled: true
+  use_llm: true            # 需 SHIBEI_LLM_API_KEY；失败自动降级
+  max_terms: 8
+expander:
+  enabled: true
+  synonyms_path: ./data/synonyms.yaml
+  fuzzy: false
+```
+
+```bash
+shibei search "大模型" --expand          # 同义词扩展
+shibei search "讲讲 Redis" --llm-rewrite # LLM 改写（需 API key）
+```
+
+同义词表示例（`data/synonyms.yaml`）：
+
+```yaml
+AI: [人工智能, 大模型, 机器学习]
+金融: [银行, 风控, finance]
+面试: [面经, interview, 求职]
 ```
 
 ### Agent 长期记忆
@@ -93,11 +142,13 @@ shibei search "后端技术选型"   # 同时召回文档和记忆
 
 ### 增量导入
 
-通过文件 hash 追踪变更，跳过未修改的文档：
+通过文件 hash 追踪变更，跳过未修改的文档。支持配置文件中的 `sources`，也支持命令行直接指定路径：
 
 ```bash
-shibei import                # 增量：只导入新增/修改的文件
-shibei import --full         # 全量重建：忽略缓存，重新导入所有
+shibei import                           # 使用 config.yaml 中的 sources
+shibei import ~/notes ~/articles        # 临时指定导入路径
+shibei import --dirs ~/notes,~/articles # 逗号分隔写法（与位置参数二选一）
+shibei import --full                    # 全量重建：忽略缓存，重新导入所有
 ```
 
 ### Profile 多场景切换
@@ -135,7 +186,7 @@ tagging:
 扫描所有文档，发现隐藏连接和洞察，并以 **skill** 形式输出整理建议（零 LLM 依赖）：
 
 ```bash
-shibei dream run
+shibei dream
 ```
 
 输出：
@@ -163,13 +214,15 @@ mcp_servers:
       SHIBEI_CONFIG: /path/to/your/config.yaml
 ```
 
-Agent 获得 7 个工具：
+Agent 获得 9 个工具：
+- `shibei_context` — **答前上下文包**（多宿主强制召回入口）
 - `shibei_search` — 语义搜索（文档 + 记忆 + 相关推荐）
 - `shibei_import` — 导入文档
 - `shibei_list_sources` — 列出已入库文件
 - `shibei_remember` — 写入长期记忆
 - `shibei_update_memory` — 更新/压缩已有记忆
-- `shibei_consolidate` / `shibei_apply_consolidation` — 发现/合并相似 chunk（后者支持外部 Agent 提供摘要，零 LLM 依赖）
+- `shibei_consolidate` — 发现相似 chunk 聚类；设置 `apply=true` 可直接合并（零 LLM 依赖）
+- `shibei_apply_consolidation` — 根据外部 Agent 提供的摘要合并相似 chunk
 - `shibei_dream` — 生成跨文档洞察与整理建议（skill 形式）
 
 ## 配置
@@ -182,20 +235,29 @@ sources:
   - ~/Documents/notes
   - ~/Documents/articles
 
+extensions:
+  - .md
+  - .txt
+  - .docx
+  - .xlsx
+  - .csv
+
 chunking:
   max_chars: 800
   split_pattern: "\n(?=## )"  # 按 ## 标题分块
 
-summarize:
-  enabled: true               # 默认开启 chunk 一句话摘要
-  max_length: 100             # 摘要最大字符数
-
 tagging:
+  path_rules:
+    - pattern: "面试/HSBC/*.md"
+      tags: "interview,hsbc"
   rules:
-    - pattern: "(面试|复盘)"
-      tag: interview
     - pattern: "(AI|大模型)"
       tag: ai
+
+expander:
+  enabled: true
+  synonyms_path: ./data/synonyms.yaml
+  fuzzy: false
 ```
 
 完整配置说明见 [docs/CONFIG.md](docs/CONFIG.md)。
@@ -206,7 +268,7 @@ tagging:
 |------|--------|
 | `SHIBEI_CONFIG` | 配置文件路径 |
 | `SHIBEI_SOURCES` | sources（逗号分隔） |
-| `SHIBEI_LLM_API_KEY` | llm.api_key |
+| `SHIBEI_LLM_API_KEY` | LLM API key（仅用于摘要生成） |
 | `SHIBEI_MCP_DEBUG` | MCP server 调试模式 |
 
 ## 架构
@@ -214,8 +276,11 @@ tagging:
 ```
 CLI (shibei)
   └── Shibei (服务层)
-        ├── Importer ──→ BM25 (FTS5，content + summary 双索引)
-        ├── Searcher ──→ BM25 搜索 + 相关推荐
+        ├── Context ──→ 答前抽词 + 搜索管线 → context pack
+        ├── Importer ──→ BM25 (FTS5)
+        ├── Searcher ──→ 规则/LLM 改写 → 扩展 → BM25 + 相关推荐
+        ├── Expander ──→ 同义词表 + 模糊匹配
+        ├── Summarizer ──→ LLM 一句话摘要（可选）
         ├── MemoryStore ──→ SQLite (BM25 召回) + 版本链
         ├── Manifest ──→ 文件 hash 追踪 (增量导入)
         ├── Profile ──→ 多场景配置切换
@@ -229,7 +294,7 @@ CLI (shibei)
 PYTHONPATH=src pytest tests/ -v
 ```
 
-测试覆盖：配置加载、标签推断、分块逻辑、BM25 摘要索引、记忆召回、轻量关联、增量追踪、Profile 管理、Dreaming 洞察与整理建议。
+测试覆盖：配置加载、标签推断、分块逻辑、BM25 索引、记忆召回、轻量关联、增量追踪、Profile 管理、Dreaming 洞察与整理建议。
 
 ## 依赖
 

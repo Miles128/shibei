@@ -62,11 +62,42 @@ class RelatedFinder:
 
         db_path = str(self.cfg.db_path_expanded / "fts5.db")
         with sqlite3.connect(db_path, timeout=30.0) as conn:
-            rows = conn.execute(
-                f"SELECT source, file_path, tags, content FROM {CONTENT_TABLE}"
-            ).fetchall()
+            # 1) 拉取目标 source 自身信息
+            src_row = conn.execute(
+                f"SELECT source, file_path, tags, content FROM {CONTENT_TABLE} WHERE source = ? LIMIT 1",
+                (source,),
+            ).fetchone()
+            if not src_row:
+                return []
 
-        return self._build_relations(source, rows, limit)
+            src_tags = src_row[2] or ""
+            # 2) 通过 tags LIKE 找到可能相关的 source（避免大库全表扫描）
+            tag_list = [t.strip() for t in src_tags.split(",") if t.strip()]
+            related_sources: set[str] = set()
+            for tag in tag_list:
+                for row in conn.execute(
+                    f"SELECT DISTINCT source FROM {CONTENT_TABLE} WHERE source != ? AND tags LIKE ?",
+                    (source, f"%{tag}%"),
+                ).fetchall():
+                    related_sources.add(row[0])
+
+            # 3) 只拉取相关 source 的 chunks；若 tag 关联为空，则回退到同目录少量样本
+            if related_sources:
+                placeholders = ",".join("?" * len(related_sources))
+                rows = conn.execute(
+                    f"SELECT source, file_path, tags, content FROM {CONTENT_TABLE} "
+                    f"WHERE source IN ({placeholders}) LIMIT 5000",
+                    tuple(related_sources),
+                ).fetchall()
+            else:
+                source_dir = Path(src_row[1] or source).parent
+                rows = conn.execute(
+                    f"SELECT source, file_path, tags, content FROM {CONTENT_TABLE} "
+                    f"WHERE file_path LIKE ? AND source != ? LIMIT 1000",
+                    (f"{source_dir}%", source),
+                ).fetchall()
+
+        return self._build_relations(source, [src_row] + list(rows), limit)
 
     def _build_relations(
         self,
@@ -135,18 +166,18 @@ class RelatedFinder:
                 continue
             if not tokens or not src_tokens:
                 continue
-            common = src_tokens & tokens
-            if not common:
+            common_tokens = src_tokens & tokens
+            if not common_tokens:
                 continue
             # Jaccard
-            score = sum(common.values()) / max(sum(src_tokens.values()), sum(tokens.values()), 1)
+            score = sum(common_tokens.values()) / max(sum(src_tokens.values()), sum(tokens.values()), 1)
             if score <= 0:
                 continue
             if other in related:
                 related[other]["score"] = min(related[other]["score"] + score, 1.0)
-                related[other]["reason"] += f"; 关键词共现"
+                related[other]["reason"] += "; 关键词共现"
             else:
-                top_words = [w for w, _ in common.most_common(3)]
+                top_words = [w for w, _ in common_tokens.most_common(3)]
                 related[other] = {
                     "source": other,
                     "score": score,
