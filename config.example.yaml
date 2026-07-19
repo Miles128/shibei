@@ -41,6 +41,27 @@ tagging:
 #     "手机": ["移动电话", "手提电话"],
 #     "AI": ["人工智能", "大模型"]
 #   }
+# === 查询改写（口语 -> BM25 友好） ===
+# 在 expander 之前执行，按顺序做关键词替换。
+rewriter:
+  enabled: false                   # 默认关闭
+  use_llm: false                   # 规则改写后再用 LLM 扩写关键词（需 SHIBEI_LLM_API_KEY）
+  max_terms: 8                     # LLM 改写最多输出词数
+  rules:
+    - from: "讲讲"                # 口语关键词
+      to: "介绍"                  # 改写后的关键词
+      enabled: true
+    - from: "怎么看"
+      to: "分析"
+      enabled: true
+
+# === 查询扩展（零向量库） ===
+# 通过外部同义词表 + 编辑距离模糊匹配，提升 BM25 召回。
+# 同义词表示例：
+#   {
+#     "手机": ["移动电话", "手提电话"],
+#     "AI": ["人工智能", "大模型"]
+#   }
 expander:
   enabled: false                   # 默认关闭
   synonyms_path: ""                # YAML/JSON 同义词表路径
@@ -48,3 +69,17 @@ expander:
   fuzzy_max_distance: 1            # 最大编辑距离
   fuzzy_max_candidates: 3          # 每个词最多返回几个模糊候选
   min_query_len: 2                 # 参与扩展的最小词长
+
+# === LLM 摘要（可选） ===
+# 导入时为每个 chunk 生成一句话中文摘要，API key 通过 SHIBEI_LLM_API_KEY 环境变量读取。
+# 摘要失败时自动降级为空字符串，不会阻断导入。
+llm:
+  enabled: false
+  base_url: "https://api.openai.com/v1"
+  model: "gpt-4o-mini"
+  timeout: 30.0
+  temperature: 0.3
+  max_tokens: 100
+  max_content_length: 1000         # 输入 chunk 最大字符数（0=不限制）
+  max_summary_length: 50           # 期望摘要最大字数
+  prompt: ""                       # 自定义 prompt 模板（留空使用默认）

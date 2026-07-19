@@ -7,6 +7,9 @@
 """
 
 import logging
+import os
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from .config import Config
@@ -15,6 +18,7 @@ from .manifest import Manifest
 from .parsers import parse_file
 from .dedup import ChunkHashStore, content_hash, dedup_chunks
 from .chunker import chunk_text, ChildChunk
+from .summarizer import ChunkSummarizer
 
 logger = logging.getLogger(__name__)
 
@@ -29,15 +33,18 @@ class Importer:
     def __init__(self, cfg: Config):
         self.cfg = cfg
         self.tagger = Tagger(cfg.tagging)
+        self.summarizer = ChunkSummarizer(cfg.llm)
 
     def run(self, dirs: 'list[str] | None' = None, full: bool = False,
-            file_pattern: 'str | None' = None) -> dict:
+            file_pattern: 'str | None' = None,
+            progress: 'Callable[[int, int], None] | None' = None) -> dict:
         """导入文档。
 
         Args:
             dirs: 要扫描的目录。None 则用 config 中的 sources。
             full: True 全量重建，False 增量导入（默认）。
             file_pattern: 文件名 glob 过滤（如 'README*'），None 不过滤。
+            progress: 进度回调，参数为 (current, total)，按文件触发。
 
         Returns:
             {"files": N, "chunks": N, "skipped": N, "removed": N,
@@ -76,18 +83,41 @@ class Importer:
         changed = to_add + to_update
         skipped = len(current_files) - len(changed)
 
-        # 分块 + 标签（仅处理变更文件）
-        # chunks_data 结构：(source, file_path, tags, content, parent_text, parent_id)
+        # 并行解析文件（IO 密集型），再串行分块 + 标签
+        # chunks_data 结构：(source, file_path, tags, content, parent_text, parent_id, summary)
         # parent_text/parent_id 在 parent_window=0 时为空字符串
-        chunks_data: list[tuple[str, str, str, str, str, str]] = []
+        # summary 默认空字符串，LLM 启用且调用成功时填充
+        chunks_data: list[tuple[str, str, str, str, str, str, str]] = []
         ck = self.cfg.chunking
-        for f in changed:
+
+        def _parse_one(path: Path) -> tuple[Path, str] | tuple[Path, Exception]:
             try:
-                content = parse_file(f)
+                return path, parse_file(path)
             except (ValueError, OSError, UnicodeDecodeError) as e:
-                warnings.append(f"文件解析失败: {f} ({e})")
-                logger.warning("文件解析失败: %s (%s)", f, e)
+                return path, e
+            except Exception as e:  # 自定义 parser 异常不中断整批导入
+                logger.exception("解析文件时发生未预期异常: %s", path)
+                return path, e
+
+        parsed_results: list[tuple[Path, str] | tuple[Path, Exception]] = []
+        if changed:
+            # IO 密集型：默认线程数参考 concurrent.futures 推荐值
+            max_workers = min(32, (os.cpu_count() or 1) + 4)
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                parsed_results = list(executor.map(_parse_one, changed))
+
+        if progress is not None:
+            progress(0, len(changed))
+
+        for idx, (f, result) in enumerate(parsed_results, start=1):
+            if isinstance(result, Exception):
+                warnings.append(f"文件解析失败: {f} ({result})")
+                logger.warning("文件解析失败: %s (%s)", f, result)
+                if progress is not None:
+                    progress(idx, len(changed))
                 continue
+
+            content = result
             tags = self.tagger.infer(f, content)
             slug = str(f)
             chunks = chunk_text(
@@ -105,15 +135,27 @@ class Importer:
                 for cc in child_chunks:
                     chunks_data.append(
                         (slug, str(f), ",".join(tags),
-                         cc.text, cc.parent_text, cc.parent_id)
+                         cc.text, cc.parent_text, cc.parent_id, "")
                     )
             else:
                 # 普通模式
                 plain_chunks: list[str] = chunks  # type: ignore[assignment]
                 for chunk_text_str in plain_chunks:
                     chunks_data.append(
-                        (slug, str(f), ",".join(tags), chunk_text_str, "", "")
+                        (slug, str(f), ",".join(tags), chunk_text_str, "", "", "")
                     )
+
+            if progress is not None:
+                progress(idx, len(changed))
+
+        # 为每个 chunk 生成一句话中文摘要（LLM 失败时降级为空字符串）
+        # chunks_data 元组已是 7 字段：(source, file_path, tags, content, parent_text, parent_id, summary_placeholder)
+        # 此处把占位的第 7 位替换为真正的 summarize 结果
+        chunks_data = [
+            (source, file_path, tags, content, parent_text, parent_id,
+             self.summarizer.summarize(content))
+            for source, file_path, tags, content, parent_text, parent_id, _placeholder in chunks_data
+        ]
 
         # 精确去重：跳过内容完全相同的 chunk
         hash_store = ChunkHashStore(self.cfg.db_path_expanded)
@@ -133,7 +175,7 @@ class Importer:
             chunks_data, hash_store.all_hashes()
         )
         # 记录新增 hash 到 store（首次出现的 source）
-        for source, file_path, tags, content, _parent_text, _parent_id in unique_chunks:
+        for source, file_path, tags, content, _parent_text, _parent_id, _summary in unique_chunks:
             h = content_hash(content)
             if not hash_store.has(h):
                 hash_store.add(h, source)

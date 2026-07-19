@@ -24,10 +24,44 @@ def cmd_serve(args):
     server_main()
 
 
+def cmd_context(args):
+    """答前上下文包：从用户消息抽词并召回文档/记忆"""
+    brain = Shibei(args.resolved_config)
+    pack = brain.context(
+        message=args.message,
+        limit=args.limit,
+        tag=args.tag,
+        write_hints=not args.no_write_hints,
+    )
+
+    print(f"query_used: {pack.get('query_used', '')}")
+    print(f"hits: {pack.get('total', 0)}")
+    print()
+    for r in pack.get("results", []):
+        print(f"[{r.get('rank', '-')}] {r.get('source')} (score={r.get('score')})")
+        print(f"    {(r.get('text') or '').replace(chr(10), ' ')}")
+        print()
+    if pack.get("memories"):
+        print("🧠 相关记忆：")
+        for m in pack["memories"]:
+            print(f"  [{m.get('category', '')}] {m.get('text')} (score={m.get('score')})")
+        print()
+    hint = pack.get("suggest_remember") or {}
+    if hint.get("should"):
+        print("💡 suggest_remember:")
+        print(f"   reason: {hint.get('reason')}")
+        print(f"   fact: {hint.get('fact')}")
+
+
 def cmd_search(args):
     brain = Shibei(args.resolved_config)
 
-    # 命令行参数可临时覆盖配置文件中的 expander 设置
+    # 命令行参数可临时覆盖配置文件中的 expander/rewriter 设置
+    if args.rewrite:
+        brain.config.rewriter.enabled = True
+    if getattr(args, "llm_rewrite", False):
+        brain.config.rewriter.enabled = True
+        brain.config.rewriter.use_llm = True
     if args.expand:
         brain.config.expander.enabled = True
     if args.no_expand:
@@ -40,6 +74,19 @@ def cmd_search(args):
         brain.config.expander.enabled = True
 
     results = brain.search(args.query, limit=args.limit, tag=args.tag)
+
+    # 展示查询改写信息
+    rewrite = results.get("rewrite")
+    if rewrite and rewrite.get("applied"):
+        print("✏️ 查询改写:")
+        for r in rewrite["applied"]:
+            print(f"  {r['from']} → {r['to']}")
+        print()
+
+    llm_rewrite = results.get("llm_rewrite")
+    if llm_rewrite and llm_rewrite.get("applied"):
+        print(f"🤖 LLM 改写: {llm_rewrite.get('rewritten')}")
+        print()
 
     # 展示查询扩展信息
     expansion = results.get("expansion")
@@ -150,9 +197,36 @@ def cmd_memories_forget(args):
 
 def cmd_import(args):
     brain = Shibei(args.resolved_config)
-    dirs = args.dirs.split(",") if args.dirs else None
-    result = brain.import_all(dirs=dirs, full=args.full,
-                              file_pattern=args.file_pattern)
+    # 支持两种来源指定方式：
+    # 1. 位置参数：shibei import ~/notes ~/articles
+    # 2. --dirs：shibei import --dirs ~/notes,~/articles
+    dirs = None
+    if args.paths:
+        dirs = list(args.paths)
+    elif args.dirs:
+        dirs = [d.strip() for d in args.dirs.split(",") if d.strip()]
+
+    # 文件级进度条；tqdm 未安装时优雅降级
+    try:
+        from tqdm import tqdm
+    except ImportError:
+        tqdm = None  # type: ignore[misc]
+
+    progress = tqdm(total=None, unit="file", desc="导入文件") if tqdm else None
+    try:
+        def _update(current: int, total: int) -> None:
+            if progress is not None:
+                progress.total = total
+                progress.update(current - progress.n)
+
+        result = brain.import_all(
+            dirs=dirs, full=args.full, file_pattern=args.file_pattern,
+            progress=_update,
+        )
+    finally:
+        if progress is not None:
+            progress.close()
+
     parts = [f"{result['files']} files → {result['chunks']} chunks"]
     if result.get("skipped"):
         parts.append(f"{result['skipped']} skipped")
@@ -174,7 +248,11 @@ def cmd_list(args):
 def cmd_clean(args):
     """清理源文件已删除的 orphan chunks"""
     brain = Shibei(args.resolved_config)
-    dirs = args.dirs.split(",") if args.dirs else None
+    dirs = None
+    if args.paths:
+        dirs = list(args.paths)
+    elif args.dirs:
+        dirs = [d.strip() for d in args.dirs.split(",") if d.strip()]
     result = brain.clean_orphans(dirs=dirs, dry_run=args.dry_run)
 
     prefix = "[dry-run] " if args.dry_run else ""
@@ -440,11 +518,23 @@ def main():
     p = sub.add_parser("serve", help="启动 MCP stdio server")
     p.add_argument("--debug", action="store_true", help="显示 stderr 日志")
 
+    # context
+    p_ctx = sub.add_parser("context", help="答前上下文包（从用户消息召回文档+记忆）")
+    p_ctx.add_argument("message", help="用户消息原文")
+    p_ctx.add_argument("--limit", type=int, default=5)
+    p_ctx.add_argument("--tag", help="标签过滤")
+    p_ctx.add_argument("--no-write-hints", action="store_true",
+                       help="不返回 suggest_remember")
+
     # search
     p = sub.add_parser("search", help="语义搜索")
     p.add_argument("query", help="搜索关键词")
     p.add_argument("--limit", type=int, default=5)
     p.add_argument("--tag", help="标签过滤")
+    p.add_argument("--rewrite", action="store_true",
+                   help="启用查询改写（效果等同配置 rewriter.enabled=true）")
+    p.add_argument("--llm-rewrite", action="store_true",
+                   help="启用 LLM 查询改写（需 SHIBEI_LLM_API_KEY）")
     p.add_argument("--expand", action="store_true",
                    help="启用同义词表查询扩展（效果等同配置 expander.enabled=true）")
     p.add_argument("--no-expand", action="store_true",
@@ -455,8 +545,9 @@ def main():
 
     # import
     p_import = sub.add_parser("import", help="全量导入文档")
+    p_import.add_argument("paths", nargs="*", help="要扫描的目录或文件路径（可多个），默认用 config sources")
     p_import.add_argument("--full", action="store_true", help="全量重建（忽略 manifest，重新导入所有文件）")
-    p_import.add_argument("--dirs", help="要扫描的目录（逗号分隔），默认用 config sources")
+    p_import.add_argument("--dirs", help="要扫描的目录（逗号分隔，与位置参数二选一），默认用 config sources")
     p_import.add_argument("--file-pattern", help="文件名 glob 过滤（如 'README*'）")
 
     # list
@@ -464,8 +555,9 @@ def main():
 
     # clean
     p_clean = sub.add_parser("clean", help="清理源文件已删除的 orphan chunks")
+    p_clean.add_argument("paths", nargs="*", help="逗号分隔的扫描目录（可多个），默认用配置中的 sources")
     p_clean.add_argument("--dirs", default=None,
-                         help="逗号分隔的扫描目录（默认用配置中的 sources）")
+                         help="逗号分隔的扫描目录（与位置参数二选一），默认用配置中的 sources")
     p_clean.add_argument("--dry-run", action="store_true",
                          help="只报告不删除")
 
@@ -598,6 +690,7 @@ def main():
 
     {
         "serve": cmd_serve,
+        "context": cmd_context,
         "search": cmd_search,
         "import": cmd_import,
         "list": cmd_list,

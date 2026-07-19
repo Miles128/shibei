@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "shibei"
 version = "0.1.0"
-description = "中文语义知识库 — BM25 + MCP，给 AI Agent 用的外部大脑"
+description = "拾贝（Shibei）— 中文语义知识库 BM25 + MCP，给 AI Agent 用的外部大脑"
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.9"

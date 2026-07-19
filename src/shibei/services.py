@@ -1,8 +1,9 @@
 """Shibei 服务层 — 统一入口"""
 
 import logging
+from collections.abc import Callable
 
-from .config import Config, load_config
+from .config import load_config
 
 logger = logging.getLogger(__name__)
 
@@ -31,11 +32,29 @@ class Shibei:
             query, limit, tag, include_memories=include_memories
         )
 
+    def context(
+        self,
+        message: str,
+        limit: int = 5,
+        tag: 'str | None' = None,
+        write_hints: bool = True,
+    ) -> dict:
+        """从用户消息构建答前上下文包（文档 + 记忆 + 写侧提示）。"""
+        from .context import build_context
+        return build_context(
+            self.config,
+            message=message,
+            limit=limit,
+            tag=tag,
+            write_hints=write_hints,
+        )
+
     def import_all(self, dirs: 'list[str] | None' = None, full: bool = False,
-                   file_pattern: 'str | None' = None) -> dict:
+                   file_pattern: 'str | None' = None,
+                   progress: 'Callable[[int, int], None] | None' = None) -> dict:
         from .importer import Importer
         return Importer(self.config).run(
-            dirs, full=full, file_pattern=file_pattern
+            dirs, full=full, file_pattern=file_pattern, progress=progress
         )
 
     def list_sources(self, limit: int = 0, offset: int = 0) -> dict:

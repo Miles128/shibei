@@ -39,15 +39,30 @@ DEFAULT_HOUSEKEEPING = {
 
 
 # 停用词（中文高频无意义词 + 英文常见词）
-STOP_WORDS = set("的了是在我有和人这中大为上个国不一到说时要就出会也得里后自"
-                 "对着过家学下可她那些产二十用主行方又如前所本见经头面起把好"
-                 "将与很想能开已但从而其做之比较没什么可以因为所以如果虽然只是"
-                 "或者以及然后可能已经应该不是大家比较一些这个那个为什么什么"
-                 # 英文停用词
-                 "the to is in of and for on at by an a or it as be are was were "
-                 "has have had with from this that not but all can will do if my no "
-                 "so up out one about how its us him he she we them than who what "
-                 "https http com www org html php aspx".split())
+_CN_STOP_WORDS = [
+    # 单字
+    "的", "了", "是", "在", "我", "有", "和", "人", "这", "中", "大", "为", "上", "个",
+    "国", "不", "一", "到", "说", "时", "要", "就", "出", "会", "也", "得", "里", "后",
+    "自", "对", "着", "过", "家", "学", "下", "可", "她", "那", "些", "产", "二", "十",
+    "用", "主", "行", "方", "又", "如", "前", "所", "本", "见", "经", "头", "面", "起",
+    "把", "好", "将", "与", "很", "想", "能", "开", "已", "但", "从", "而", "其", "做",
+    "之", "比", "较", "没", "什", "么", "可", "以", "因", "为", "所", "以", "如", "果",
+    "虽", "然", "只", "是", "或", "者", "以", "及", "然", "后", "可", "能", "已", "经",
+    "应", "该", "不", "是", "大", "家",
+    # 多字
+    "比较", "一些", "这个", "那个", "为什么", "什么", "或者", "以及", "然后", "可能",
+    "已经", "应该", "不是", "大家",
+]
+
+_EN_STOP_WORDS = [
+    "the", "to", "is", "in", "of", "and", "for", "on", "at", "by", "an", "a", "or", "it",
+    "as", "be", "are", "was", "were", "has", "have", "had", "with", "from", "this", "that",
+    "not", "but", "all", "can", "will", "do", "if", "my", "no", "so", "up", "out", "one",
+    "about", "how", "its", "us", "him", "he", "she", "we", "them", "than", "who", "what",
+    "https", "http", "com", "www", "org", "html", "php", "aspx",
+]
+
+STOP_WORDS = set(_CN_STOP_WORDS + _EN_STOP_WORDS)
 
 
 def extract_keywords(text: str, top_n: int = 8) -> list[str]:
@@ -59,7 +74,10 @@ def extract_keywords(text: str, top_n: int = 8) -> list[str]:
     try:
         import jieba.analyse
         kws = jieba.analyse.extract_tags(text, topK=top_n)
-        kws = [w for w in kws if not is_noise_token(w)]
+        kws = [
+            w for w in kws
+            if not is_noise_token(w) and w.lower() not in STOP_WORDS
+        ]
         if kws:
             return kws[:top_n]
     except ImportError:

@@ -107,3 +107,39 @@ def test_import_full_rebuild():
         importer.run(full=True)
         importer.run(full=True)
         assert bm25.count() == 1
+
+
+def test_import_handles_parser_error_and_reports_progress(monkeypatch, tmp_path):
+    """单个文件解析异常不应中断整批导入，且进度回调按文件触发。"""
+    import shibei.importer
+
+    source_dir = tmp_path / "notes"
+    source_dir.mkdir()
+    db_path = tmp_path / "db"
+    db_path.mkdir()
+
+    (source_dir / "ok.md").write_text("ok content", encoding="utf-8")
+    (source_dir / "bad.md").write_text("bad content", encoding="utf-8")
+
+    original = shibei.importer.parse_file
+
+    def fake_parse_file(path: Path) -> str:
+        if path.name == "bad.md":
+            raise ValueError("mock parser error")
+        return original(path)
+
+    monkeypatch.setattr(shibei.importer, "parse_file", fake_parse_file)
+
+    cfg = _cfg(source_dir, db_path)
+    progress_calls = []
+
+    def progress(current: int, total: int) -> None:
+        progress_calls.append((current, total))
+
+    result = Importer(cfg).run(progress=progress)
+
+    assert result["status"] == "ok"
+    assert result["files"] == 2
+    assert result["chunks"] == 1
+    assert any("bad.md" in w and "mock parser error" in w for w in result.get("warnings", []))
+    assert progress_calls == [(0, 2), (1, 2), (2, 2)]

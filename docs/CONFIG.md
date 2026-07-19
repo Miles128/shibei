@@ -63,13 +63,32 @@ tagging:
 
 regex 规则的 `pattern` 是 Python 正则（大小写不敏感）。
 
+## rewriter
+
+查询改写（在 expander 之前执行）。
+
+```yaml
+rewriter:
+  enabled: false
+  use_llm: false               # true 时规则改写后再用 LLM 扩写关键词
+  max_terms: 8                 # LLM 最多输出词数
+  rules:
+    - from: "讲讲"
+      to: "介绍"
+      enabled: true
+```
+
+`use_llm: true` 需要环境变量 `SHIBEI_LLM_API_KEY`；无 key 或调用失败时自动降级，不阻断搜索。
+
 ## CLI 参数
 
 ```bash
 shibei import                  # 增量导入（跳过未变更文件）
 shibei import --full           # 全量重建（忽略 manifest 缓存）
 shibei import --dirs ~/a,~/b   # 临时指定扫描目录
+shibei context "用户消息原文"  # 答前上下文包
 shibei search "关键词" --limit 10 --tag ai
+shibei search "口语查询" --llm-rewrite
 shibei clean                   # 清理源文件已删除的 orphan chunks
 shibei clean --dry-run         # 只报告不删除
 shibei consolidate --apply     # 发现相似 chunk 并直接合并
