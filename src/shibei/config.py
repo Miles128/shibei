@@ -97,6 +97,50 @@ class LLMConfig:
     prompt: str = ""                            # 自定义 prompt 模板（留空用默认）
 
 
+@dataclass
+class VectorConfig:
+    """轻量向量混合检索（P2 规格落地）— 默认关闭，保持零依赖。
+
+    开启后导入时为 chunk 生成 embedding，搜索用 BM25 + 向量三路 RRF 融合。
+    - provider=api：OpenAI-compatible /embeddings 接口（key 走 SHIBEI_LLM_API_KEY）
+    - provider=local：可选依赖 fastembed（本地 ONNX，如 BAAI/bge-small-zh-v1.5）
+    任一不可用时自动降级纯 BM25。
+    """
+
+    enabled: bool = False
+    provider: str = "api"                       # "api" | "local"
+    model: str = "BAAI/bge-small-zh-v1.5"       # 本地模型名或 API 侧的 embedding 模型名
+    dim: int = 512                              # 向量维度（bge-small-zh-v1.5 = 512）
+    batch_size: int = 16                        # 批量 embedding 大小
+
+
+@dataclass
+class OffloadConfig:
+    """MCP 响应上下文卸载 — 对标 TencentDB 的短期上下文治理。
+
+    当 shibei_context / shibei_search 的序列化结果超过 max_bytes 时，
+    完整 JSON 写入 <db_path>/offload/<id>.json，响应只回摘要 + 引用路径。
+    """
+
+    enabled: bool = True
+    max_bytes: int = 8000                       # 超过此字节数即卸载
+    keep_summary_text: int = 120                # 卸载时每个文本字段保留的字符数
+
+
+@dataclass
+class AutoMemoryConfig:
+    """可选自动记忆抽取 — 对标 TencentDB 的 L0→L1 自动流水线（默认关闭）。
+
+    开启且设置了 SHIBEI_LLM_API_KEY 时，shibei_context 检测到第一人称披露
+    的新事实会自动写入记忆，无需宿主手动调 remember。
+    """
+
+    enabled: bool = False
+    category: str = "user"                      # 自动写入的记忆分类
+    source: str = "auto"                        # 来源标记
+    max_facts: int = 3                          # 单次最多抽取条数
+
+
 DEFAULT_IGNORE_DIRS = (
     ".git",
     "node_modules",
@@ -128,6 +172,9 @@ class Config:
     rewriter: RewriterConfig = field(default_factory=RewriterConfig)
     related: RelatedConfig = field(default_factory=RelatedConfig)
     llm: LLMConfig = field(default_factory=LLMConfig)
+    vector: VectorConfig = field(default_factory=VectorConfig)
+    offload: OffloadConfig = field(default_factory=OffloadConfig)
+    auto_memory: AutoMemoryConfig = field(default_factory=AutoMemoryConfig)
 
     @property
     def db_path_expanded(self) -> Path:
@@ -214,5 +261,17 @@ def load_config(path: str = "config.yaml") -> Config:
     # LLM 摘要
     if "llm" in raw:
         cfg.llm = LLMConfig(**raw["llm"])
+
+    # 轻量向量混合（可选，默认关）
+    if "vector" in raw:
+        cfg.vector = VectorConfig(**raw["vector"])
+
+    # MCP 响应上下文卸载
+    if "offload" in raw:
+        cfg.offload = OffloadConfig(**raw["offload"])
+
+    # 自动记忆抽取（可选，默认关）
+    if "auto_memory" in raw:
+        cfg.auto_memory = AutoMemoryConfig(**raw["auto_memory"])
 
     return cfg

@@ -86,3 +86,33 @@ llm:
   max_content_length: 1000         # 输入 chunk 最大字符数（0=不限制）
   max_summary_length: 50           # 期望摘要最大字数
   prompt: ""                       # 自定义 prompt 模板（留空使用默认）
+
+# === 轻量向量混合检索（可选，默认关） ===
+# 开启后导入时为 chunk 生成向量，搜索用 BM25 + 向量三路 RRF 融合（对标 TencentDB hybrid）。
+# 两个后端：
+#   - api:   OpenAI-compatible /embeddings 接口（key 走 SHIBEI_LLM_API_KEY）
+#   - local: 可选依赖 fastembed（本地 ONNX，需 pip install fastembed）
+# 任一不可用自动降级纯 BM25，不阻断导入/搜索。
+vector:
+  enabled: false
+  provider: api                    # "api" | "local"
+  model: "BAAI/bge-small-zh-v1.5"  # 本地模型名或 API 侧 embedding 模型名
+  dim: 512                         # 向量维度（bge-small-zh-v1.5 = 512）
+  batch_size: 16                   # 批量 embedding 大小
+
+# === MCP 响应上下文卸载（对标 TencentDB 短期上下文治理） ===
+# shibei_context / shibei_search 结果超过 max_bytes 时，完整 JSON 写入
+# <db_path>/offload/<id>.json，响应只回摘要 + 引用路径，省上下文 Token。
+offload:
+  enabled: true
+  max_bytes: 8000                  # 超过此字节数即卸载
+  keep_summary_text: 120           # 卸载时每个文本字段保留的字符数
+
+# === 自动记忆抽取（可选，默认关，对标 TencentDB L0→L1 自动流水线） ===
+# 开启且设置 SHIBEI_LLM_API_KEY 时，shibei_context 检测到第一人称披露
+# 的新事实会自动写入记忆，无需宿主手动调 remember。
+auto_memory:
+  enabled: false
+  category: user                   # 自动写入的记忆分类
+  source: auto                     # 来源标记
+  max_facts: 3                     # 单次最多抽取条数

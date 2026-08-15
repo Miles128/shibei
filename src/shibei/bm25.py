@@ -8,6 +8,7 @@ FTS5 存分词语料做索引，原文存独立表。
 """
 
 import sqlite3
+import struct
 from pathlib import Path
 
 from .tokenizer import tokenize_text, tokenize_query
@@ -17,6 +18,7 @@ DB_NAME = "fts5.db"
 CONTENT_TABLE = "chunks"
 FTS_TABLE = "chunks_fts"
 SUMMARY_COL = "summary"
+EMB_TABLE = "chunk_embeddings"
 
 
 class BM25Index:
@@ -77,6 +79,15 @@ class BM25Index:
                         (rowid, tokenize_text(content or ""), tokenize_text(summary or "")),
                     )
 
+            # 向量表：BLOB 存稠密向量（PRD 10.3 规格：chunk_embeddings(rowid, dim, vector)）
+            conn.execute(f"""
+                CREATE TABLE IF NOT EXISTS {EMB_TABLE} (
+                    rowid INTEGER PRIMARY KEY,
+                    dim INTEGER NOT NULL,
+                    vector BLOB NOT NULL
+                )
+            """)
+
             conn.commit()
 
     def _rebuild_fts_index(self, conn: sqlite3.Connection):
@@ -98,16 +109,18 @@ class BM25Index:
         with sqlite3.connect(self.db_path, timeout=30.0) as conn:
             conn.execute(f"DELETE FROM {CONTENT_TABLE}")
             conn.execute(f"INSERT INTO {FTS_TABLE}({FTS_TABLE}) VALUES('delete-all')")
+            conn.execute(f"DELETE FROM {EMB_TABLE}")
             conn.commit()
 
-    def add_batch(self, items: list):
-        """批量添加 chunks。
+    def add_batch(self, items: list) -> list[int]:
+        """批量添加 chunks，返回新插入的 rowid 列表（供向量索引联动）。
 
         兼容格式：
           4-tuple: (source, file_path, tags, content)
           6-tuple: (source, file_path, tags, content, parent_text, parent_id)
           7-tuple: (..., summary)
         """
+        new_rowids: list[int] = []
         with sqlite3.connect(self.db_path, timeout=30.0) as conn:
             for item in items:
                 source, file_path, tags, content = item[0], item[1], item[2], item[3]
@@ -128,7 +141,67 @@ class BM25Index:
                     f"INSERT INTO {FTS_TABLE} (rowid, content_tokens, summary_tokens) VALUES (?, ?, ?)",
                     (rowid, content_tokens, summary_tokens),
                 )
+                new_rowids.append(rowid)
             conn.commit()
+        return new_rowids
+
+    # ---------- 向量混合检索（可选，PRD 10.3） ----------
+
+    def store_embeddings(self, items: list[tuple[int, list[float]]]):
+        """批量写入 chunk 向量（rowid, vector）。重复 rowid 覆盖。"""
+        if not items:
+            return
+        with sqlite3.connect(self.db_path, timeout=30.0) as conn:
+            for rowid, vector in items:
+                conn.execute(
+                    f"INSERT OR REPLACE INTO {EMB_TABLE} (rowid, dim, vector) VALUES (?, ?, ?)",
+                    (rowid, len(vector), _pack_vector(vector)),
+                )
+            conn.commit()
+
+    def clear_embeddings(self):
+        with sqlite3.connect(self.db_path, timeout=30.0) as conn:
+            conn.execute(f"DELETE FROM {EMB_TABLE}")
+            conn.commit()
+
+    def search_embeddings(
+        self,
+        query_vec: list[float],
+        limit: int = 10,
+        tag: 'str | None' = None,
+    ) -> list[tuple[int, float]]:
+        """向量 top-k 检索：BLOB 全量加载 + 纯 Python 余弦（零依赖，小语料够用）。
+
+        Returns:
+            [(rowid, cosine), ...] 按相似度降序
+        """
+        if not query_vec:
+            return []
+        with sqlite3.connect(self.db_path, timeout=30.0) as conn:
+            if tag:
+                rows = conn.execute(
+                    f"""
+                    SELECT e.rowid, e.vector FROM {EMB_TABLE} e
+                    JOIN {CONTENT_TABLE} c ON c.rowid = e.rowid
+                    WHERE (',' || c.tags || ',') LIKE ?
+                    """,
+                    (f"%,{tag},%",),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    f"SELECT rowid, vector FROM {EMB_TABLE}"
+                ).fetchall()
+        scored = [
+            (rowid, _cosine(_unpack_vector(blob), query_vec))
+            for rowid, blob in rows
+        ]
+        scored.sort(key=lambda x: x[1], reverse=True)
+        return scored[:limit]
+
+    def count_embeddings(self) -> int:
+        with sqlite3.connect(self.db_path, timeout=30.0) as conn:
+            row = conn.execute(f"SELECT COUNT(*) FROM {EMB_TABLE}").fetchone()
+            return row[0] if row else 0
 
     def search(
         self,
@@ -152,6 +225,31 @@ class BM25Index:
         content_rows = self._search_field("content_tokens", tokenized, limit * 3, tag)
         summary_rows = self._search_field("summary_tokens", tokenized, limit * 3, tag)
         return self._rrf_fuse_rows(content_rows, summary_rows, limit)
+
+    def search_hybrid(
+        self,
+        query: str,
+        limit: int = 5,
+        tag: 'str | None' = None,
+        tokenized_query: 'str | None' = None,
+        query_vec: 'list[float] | None' = None,
+        vec_k: int = 60,
+    ) -> list[dict]:
+        """混合检索：BM25 正文 + BM25 摘要 + 向量 三路 RRF 融合。
+
+        query_vec 为 None 或向量检索无结果时退化为纯 BM25 双路。
+        """
+        tokenized = tokenized_query if tokenized_query is not None else tokenize_query(query)
+        if not tokenized.strip():
+            return []
+        content_rows = self._search_field("content_tokens", tokenized, limit * 3, tag)
+        summary_rows = self._search_field("summary_tokens", tokenized, limit * 3, tag)
+
+        if not query_vec:
+            return self._rrf_fuse_rows(content_rows, summary_rows, limit)
+
+        vec_hits = self.search_embeddings(query_vec, limit * 3, tag)
+        return self._rrf_fuse_rows(content_rows, summary_rows, limit, vec_hits=vec_hits, k=vec_k)
 
     def _search_field(
         self,
@@ -215,9 +313,10 @@ class BM25Index:
         content_rows: list[tuple],
         summary_rows: list[tuple],
         limit: int,
+        vec_hits: 'list[tuple[int, float]] | None' = None,
         k: int = 60,
     ) -> list[dict]:
-        """RRF 融合正文和摘要的搜索结果。"""
+        """RRF 融合正文、摘要、（可选）向量的搜索结果。"""
         rrf_scores: dict[int, float] = {}
         best_item: dict[int, dict] = {}
 
@@ -232,6 +331,24 @@ class BM25Index:
             rrf_scores[rowid] = rrf_scores.get(rowid, 0.0) + 1.0 / (k + rank)
             if rowid not in best_item:
                 best_item[rowid] = self._row_to_item(row)
+
+        if vec_hits:
+            # 向量路按余弦相似度降序排名
+            for rank, (rowid, _sim) in enumerate(vec_hits, start=1):
+                rrf_scores[rowid] = rrf_scores.get(rowid, 0.0) + 1.0 / (k + rank)
+            # 仅向量命中、BM25 未命中的行：从内容表补全原文，避免返回空 text
+            missing = [rowid for rowid, _ in vec_hits if rowid not in best_item]
+            if missing:
+                placeholders = ",".join("?" * len(missing))
+                with sqlite3.connect(self.db_path, timeout=30.0) as conn:
+                    rows = conn.execute(
+                        f"SELECT rowid, source, file_path, tags, content, "
+                        f"parent_text, parent_id, 0.0 AS rank "
+                        f"FROM {CONTENT_TABLE} WHERE rowid IN ({placeholders})",
+                        missing,
+                    ).fetchall()
+                for row in rows:
+                    best_item[row[0]] = self._row_to_item(row)
 
         fused = sorted(
             best_item.values(),
@@ -286,6 +403,11 @@ class BM25Index:
                 f"DELETE FROM {CONTENT_TABLE} WHERE source IN ({placeholders})",
                 sources,
             )
+            # 联动清理向量
+            conn.execute(
+                f"DELETE FROM {EMB_TABLE} WHERE rowid NOT IN "
+                f"(SELECT rowid FROM {CONTENT_TABLE})"
+            )
             self._rebuild_fts_index(conn)
             conn.commit()
 
@@ -309,6 +431,10 @@ class BM25Index:
             placeholders = ",".join("?" * len(rowids))
             conn.execute(
                 f"DELETE FROM {CONTENT_TABLE} WHERE rowid IN ({placeholders})",
+                rowids,
+            )
+            conn.execute(
+                f"DELETE FROM {EMB_TABLE} WHERE rowid IN ({placeholders})",
                 rowids,
             )
             self._rebuild_fts_index(conn)
@@ -341,6 +467,10 @@ class BM25Index:
                     f"DELETE FROM {CONTENT_TABLE} WHERE rowid IN ({placeholders})",
                     rowids,
                 )
+                conn.execute(
+                    f"DELETE FROM {EMB_TABLE} WHERE rowid IN ({placeholders})",
+                    rowids,
+                )
             for item in items:
                 source, file_path, tags, content = item[0], item[1], item[2], item[3]
                 parent_text = item[4] if len(item) > 4 else ""
@@ -354,3 +484,27 @@ class BM25Index:
                 )
             self._rebuild_fts_index(conn)
             conn.commit()
+
+
+# ---------- 向量编解码（零依赖，float32 LE 紧凑存储） ----------
+
+
+def _pack_vector(vector: list[float]) -> bytes:
+    """float32 little-endian 紧凑打包（PRD 10.3 vector BLOB）。"""
+    return struct.pack(f"<{len(vector)}f", *vector)
+
+
+def _unpack_vector(blob: bytes) -> list[float]:
+    n = len(blob) // 4
+    return list(struct.unpack(f"<{n}f", blob))
+
+
+def _cosine(a: list[float], b: list[float]) -> float:
+    """余弦相似度（与 embedding.cosine_similarity 同实现，避免跨模块依赖）。"""
+    n = min(len(a), len(b))
+    dot = sum(a[i] * b[i] for i in range(n))
+    na = sum(x * x for x in a) ** 0.5
+    nb = sum(x * x for x in b) ** 0.5
+    if na == 0.0 or nb == 0.0:
+        return 0.0
+    return dot / (na * nb)

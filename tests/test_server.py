@@ -106,6 +106,7 @@ class FakeBrain:
         source: str = "",
         tags: str = "",
         expires_at: str | None = None,
+        source_message_ids: str = "",
     ):
         self.calls.append(
             (
@@ -116,6 +117,7 @@ class FakeBrain:
                     "source": source,
                     "tags": tags,
                     "expires_at": expires_at,
+                    "source_message_ids": source_message_ids,
                 },
             )
         )
@@ -131,6 +133,10 @@ class FakeBrain:
             ("update_memory", {"memory_id": memory_id, "fact": fact, "tags": tags})
         )
         return True
+
+    def persona(self, per_category: int = 5, max_facts: int = 20):
+        self.calls.append(("persona", {"per_category": per_category, "max_facts": max_facts}))
+        return {"categories": {"preference": ["喜欢 Python"]}, "total": 1}
 
 
 class FailingBrain(FakeBrain):
@@ -180,7 +186,7 @@ def test_server_tools_list(server_env, monkeypatch):
 
     assert len(responses) == 1
     tools = responses[0]["result"]["tools"]
-    assert len(tools) == 9
+    assert len(tools) == 10
     assert {t["name"] for t in tools} == set(server.TOOLS.keys())
     assert "shibei_context" in {t["name"] for t in tools}
 
@@ -283,6 +289,7 @@ def test_server_tools_list(server_env, monkeypatch):
                     "source": "s1",
                     "tags": "py",
                     "expires_at": None,
+                    "source_message_ids": "",
                 },
             ),
         ),
@@ -431,3 +438,57 @@ def test_server_idless_request_treated_as_notification(server_env, monkeypatch):
     monkeypatch.setattr(sys, "stdout", stdout)
     responses = _run([json.dumps({"jsonrpc": "2.0", "method": "tools/list"})])
     assert responses == []
+
+
+def test_server_persona_tool(server_env, monkeypatch):
+    """shibei_persona 工具存在且可分发。"""
+    stdout = StringIO()
+    monkeypatch.setattr(sys, "stdout", stdout)
+    req = {
+        "jsonrpc": "2.0", "id": 50,
+        "method": "tools/call",
+        "params": {"name": "shibei_persona", "arguments": {"per_category": 3}},
+    }
+    responses = _run([json.dumps(req)])
+    assert responses[0]["id"] == 50
+    text = responses[0]["result"]["content"][0]["text"]
+    assert json.loads(text)["total"] == 1
+    assert FakeBrain.calls == [("persona", {"per_category": 3, "max_facts": 20})]
+
+
+def test_server_context_offload(server_env, monkeypatch, tmp_path):
+    """结果超过 offload.max_bytes 时写文件并返回紧凑摘要。"""
+    import types
+
+    class OffloadBrain(FakeBrain):
+        config = types.SimpleNamespace(
+            db_path_expanded=tmp_path,
+            offload=types.SimpleNamespace(
+                enabled=True, max_bytes=50, keep_summary_text=10
+            ),
+        )
+
+        def context(self, message="", limit=5, tag=None, write_hints=True, query=None):
+            return {"message": message, "total": 1, "results": [{"text": "很长" * 50}]}
+
+    monkeypatch.setattr(server, "_init_brain", OffloadBrain)
+    stdout = StringIO()
+    monkeypatch.setattr(sys, "stdout", stdout)
+    req = {
+        "jsonrpc": "2.0", "id": 51,
+        "method": "tools/call",
+        "params": {"name": "shibei_context", "arguments": {"message": "hi"}},
+    }
+    responses = _run([json.dumps(req)])
+    text = json.loads(responses[0]["result"]["content"][0]["text"])
+    assert "offloaded" in text
+    assert "path" in text["offloaded"]
+    # 文本字段被截断
+    assert len(text["results"][0]["text"]) <= 11
+    # 完整结果确实落盘
+    import os
+    assert os.path.exists(text["offloaded"]["path"])
+    with open(text["offloaded"]["path"], encoding="utf-8") as f:
+        full = json.load(f)
+    assert full["results"][0]["text"] == "很长" * 50
+    os.remove(text["offloaded"]["path"])

@@ -103,6 +103,7 @@ class FakeBrain:
         source: str = "",
         tags: str = "",
         expires_at: str | None = None,
+        source_message_ids: str = "",
     ):
         self.calls.append(
             (
@@ -113,6 +114,7 @@ class FakeBrain:
                     "source": source,
                     "tags": tags,
                     "expires_at": expires_at,
+                    "source_message_ids": source_message_ids,
                 },
             )
         )
@@ -294,6 +296,7 @@ def test_cli_remember(config_path, monkeypatch, capsys):
                 "source": "session-1",
                 "tags": "python,backend",
                 "expires_at": None,
+                "source_message_ids": "",
             },
         )
     ]

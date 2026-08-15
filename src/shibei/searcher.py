@@ -78,7 +78,36 @@ class BM25Engine(SearchEngine):
                 logger.debug("扩展查询: %s -> %s", effective_query, expansion["expanded"])
 
         bm25 = BM25Index(str(self.cfg.db_path_expanded / "fts5.db"))
-        results = bm25.search(query, limit, tag, tokenized_query=tokenized_query)
+
+        # 轻量向量混合（可选）：开启且 embedding 可用时走三路 RRF
+        hybrid_info = None
+        query_vec = None
+        if self.cfg.vector.enabled:
+            from .embedding import Embedder
+
+            embedder = Embedder(
+                provider=self.cfg.vector.provider,
+                model=self.cfg.vector.model,
+                base_url=self.cfg.llm.base_url,
+                timeout=self.cfg.llm.timeout,
+                batch_size=self.cfg.vector.batch_size,
+            )
+            if embedder.available():
+                vecs = embedder.embed([effective_query])
+                if vecs:
+                    query_vec = vecs[0]
+                    hybrid_info = {
+                        "provider": self.cfg.vector.provider,
+                        "model": self.cfg.vector.model,
+                    }
+
+        if query_vec is not None:
+            results = bm25.search_hybrid(
+                query, limit, tag, tokenized_query=tokenized_query, query_vec=query_vec
+            )
+        else:
+            results = bm25.search(query, limit, tag, tokenized_query=tokenized_query)
+
         result = {
             "query": query,
             "query_used": effective_query,
@@ -91,6 +120,8 @@ class BM25Engine(SearchEngine):
             result["llm_rewrite"] = llm_rewrite_info
         if expansion:
             result["expansion"] = expansion
+        if hybrid_info:
+            result["hybrid"] = hybrid_info
         return result
 
 

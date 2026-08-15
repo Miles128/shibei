@@ -71,9 +71,13 @@
 - **文档导入**：扫描目录 → 分块 → 去重 → 可选一句话摘要 → BM25 索引
 - **全文搜索**：SQLite FTS5 BM25（正文 + 摘要双列，RRF 融合）；可选规则/LLM 查询改写
 - **答前上下文**：`shibei_context` 从用户消息抽词并召回文档 + 记忆
-- **对话记忆**：持久化 + supersedes 版本链
+- **对话记忆**：持久化 + supersedes 版本链 + `source_message_ids` 溯源
 - **Dreaming**：跨文档洞察与整理候选（零 LLM 依赖）
-- **MCP**：9 个工具：context、search、import、list_sources、remember、update_memory、consolidate、apply_consolidation、dream
+- **MCP**：10 个工具：context、search、import、list_sources、persona、remember、update_memory、consolidate、apply_consolidation、dream
+- **画像层**：`shibei_persona` / context 注入 `persona`（按类别聚合记忆，零 LLM，对标 TencentDB L3）
+- **向量 hybrid**（可选，默认关）：`vector.enabled=true` 时 BM25 + 向量三路 RRF 融合
+- **上下文卸载**（默认开）：大结果落盘 `<db_path>/offload/`，响应只回摘要 + 引用路径
+- **自动记忆**（可选，默认关）：`auto_memory.enabled=true` 时 context 检测到新事实自动写入
 
 ## 技术栈
 

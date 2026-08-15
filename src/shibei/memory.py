@@ -121,6 +121,12 @@ class MemoryStore(AbstractMemoryStore):
                 )
                 """
             )
+            # 自动迁移：旧库补 source_message_ids 列（溯源字段）
+            cols = {row[1] for row in conn.execute(f"PRAGMA table_info({MEMORIES_TABLE})").fetchall()}
+            if "source_message_ids" not in cols:
+                conn.execute(
+                    f"ALTER TABLE {MEMORIES_TABLE} ADD COLUMN source_message_ids TEXT DEFAULT ''"
+                )
             conn.execute(
                 f"""
                 CREATE VIRTUAL TABLE IF NOT EXISTS {FTS_TABLE} USING fts5(
@@ -144,8 +150,15 @@ class MemoryStore(AbstractMemoryStore):
         expires_at: Optional[str] = None,
         supersede_threshold: float = 0.7,
         created_at: Optional[str] = None,
+        source_message_ids: str = "",
     ) -> dict:
-        """写入一条记忆，并尝试建立版本链。"""
+        """写入一条记忆，并尝试建立版本链。
+
+        Args:
+            source_message_ids: 溯源字段，宿主传入触发该记忆的原始消息 ID
+                （对标 TencentDB L1 原子记忆的 source_message_ids 溯源链），
+                召回时随记忆返回，Agent 可回溯到原始对话。
+        """
         fact = fact.strip()
         if not fact:
             raise ValueError("fact cannot be empty")
@@ -173,13 +186,13 @@ class MemoryStore(AbstractMemoryStore):
                 f"""
                 INSERT INTO {MEMORIES_TABLE}
                 (id, fact, category, source, tags, created_at, expires_at,
-                 supersedes, superseded_by)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 supersedes, superseded_by, source_message_ids)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     memory_id, fact, category or "", source,
                     tags, created_at, expires_at or "",
-                    supersedes or "", "",
+                    supersedes or "", "", source_message_ids or "",
                 ),
             )
             rowid = cur.lastrowid
@@ -272,7 +285,7 @@ class MemoryStore(AbstractMemoryStore):
         """BM25 搜索记忆。"""
         sql = f"""
             SELECT m.id, m.fact, m.category, m.source, m.tags, m.created_at,
-                   m.expires_at, m.supersedes, m.superseded_by,
+                   m.expires_at, m.supersedes, m.superseded_by, m.source_message_ids,
                    rank AS score
             FROM {FTS_TABLE} f
             JOIN {MEMORIES_TABLE} m ON m.rowid = f.rowid
@@ -316,6 +329,7 @@ class MemoryStore(AbstractMemoryStore):
                 "expires_at": row["expires_at"],
                 "supersedes": row["supersedes"],
                 "superseded_by": row["superseded_by"],
+                "source_message_ids": row["source_message_ids"] or "",
                 "score": score,
             })
         return results
@@ -350,6 +364,57 @@ class MemoryStore(AbstractMemoryStore):
             conn.row_factory = sqlite3.Row
             rows = conn.execute(sql, params).fetchall()
         return [dict(r) for r in rows]
+
+    def persona(
+        self,
+        per_category: int = 5,
+        max_facts: int = 20,
+        include_superseded: bool = False,
+    ) -> dict:
+        """轻量画像层：按 category 聚合有效记忆，零 LLM 依赖。
+
+        对标 TencentDB 的 L3 Persona：把零散 fact 按类别聚合成
+        高密度画像（偏好/项目/技术栈…），供 shibei_context 答前注入。
+
+        Returns:
+            {
+                "categories": {category: [fact, ...]},
+                "total": int,
+                "updated_at": str,
+            }
+        """
+        with sqlite3.connect(str(self.db_file), timeout=30.0) as conn:
+            conn.row_factory = sqlite3.Row
+            sql = f"""
+                SELECT fact, category, created_at, source_message_ids FROM {MEMORIES_TABLE}
+                WHERE 1=1
+            """
+            params: list = []
+            if not include_superseded:
+                sql += " AND (superseded_by IS NULL OR superseded_by = '')"
+            sql += " ORDER BY created_at DESC"
+            rows = conn.execute(sql, params).fetchall()
+
+        categories: dict[str, list[dict]] = {}
+        total = 0
+        for r in rows:
+            cat = (r["category"] or "user").strip() or "user"
+            if len(categories.get(cat, [])) >= per_category:
+                continue
+            if total >= max_facts:
+                break
+            categories.setdefault(cat, []).append({
+                "fact": r["fact"],
+                "created_at": r["created_at"],
+                "source_message_ids": r["source_message_ids"] or "",
+            })
+            total += 1
+
+        return {
+            "categories": categories,
+            "total": total,
+            "updated_at": self._now(),
+        }
 
     def forget(self, memory_id: str) -> bool:
         """删除一条记忆及其 FTS 索引。"""

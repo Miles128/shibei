@@ -218,16 +218,20 @@ mcp_servers:
       SHIBEI_CONFIG: /path/to/your/config.yaml
 ```
 
-Agent 获得 9 个工具：
-- `shibei_context` — **答前上下文包**（多宿主强制召回入口）
-- `shibei_search` — 语义搜索（文档 + 记忆 + 相关推荐）
+Agent 获得 10 个工具：
+- `shibei_context` — **答前上下文包**（多宿主强制召回入口，含轻量画像注入）
+- `shibei_search` — 语义搜索（文档 + 记忆 + 相关推荐；可选向量 hybrid）
 - `shibei_import` — 导入文档
 - `shibei_list_sources` — 列出已入库文件
-- `shibei_remember` — 写入长期记忆
+- `shibei_persona` — **轻量画像**（按类别聚合长期记忆，零 LLM）
+- `shibei_remember` — 写入长期记忆（支持 `source_message_ids` 溯源）
 - `shibei_update_memory` — 更新/压缩已有记忆
 - `shibei_consolidate` — 发现相似 chunk 聚类；设置 `apply=true` 可直接合并（零 LLM 依赖）
 - `shibei_apply_consolidation` — 根据外部 Agent 提供的摘要合并相似 chunk
 - `shibei_dream` — 生成跨文档洞察与整理建议（skill 形式）
+
+> **上下文卸载**：context/search 结果超过 `offload.max_bytes` 时，完整 JSON 自动写入
+> `<db_path>/offload/<id>.json`，响应只回摘要 + 引用路径（省 Token，对标 TencentDB 上下文卸载）。
 
 ## 配置
 

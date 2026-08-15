@@ -200,3 +200,49 @@ def test_delete_with_like_wildcards_does_not_mismatch(store):
     assert store.delete("%" + r1["id"][4:8]) is False
     assert store.get(r1["id"]) is not None
     assert store.get(r2["id"]) is not None
+
+
+# ---- P0/P1 新功能：溯源字段 + 画像层 ----
+
+def test_source_message_ids_roundtrip(store):
+    """remember 传入 source_message_ids 后，搜索/列表应能带出（溯源）。"""
+    store.add("用户偏好 Python", category="preference", source_message_ids="msg-101,msg-102")
+    rows = store.search("Python 偏好", limit=5)
+    assert rows and rows[0]["source_message_ids"] == "msg-101,msg-102"
+    listed = store.list(limit=10)
+    assert listed[0]["source_message_ids"] == "msg-101,msg-102"
+
+
+def test_source_message_ids_default_empty(store):
+    """未传 source_message_ids 时默认为空字符串。"""
+    r = store.add("用户偏好 Python", category="preference")
+    row = store.get(r["id"])
+    assert row["source_message_ids"] == ""
+
+
+def test_persona_aggregates_by_category(store):
+    """persona() 按类别聚合有效记忆，排除被替代的版本。"""
+    a = store.add("用户喜欢 Python 而不是 Go", category="preference")
+    store.add("用户目标是转行 AI 产品", category="preference")
+    store.add("NoteAI 是主力产品", category="project")
+    store.add("这条会被替代", category="user")
+    store.add("用户喜欢 Python 而不是 Go（新版）", category="preference")  # Jaccard 高，替代 a
+    p = store.persona()
+    assert "preference" in p["categories"]
+    assert "project" in p["categories"]
+    # 被替代的旧事实不应出现在画像里
+    all_facts = [f["fact"] for facts in p["categories"].values() for f in facts]
+    assert "用户喜欢 Python 而不是 Go" not in all_facts
+    assert p["total"] >= 3
+
+
+def test_persona_limits(store):
+    """per_category / max_facts 限制生效（每句两个独特词，避免 Jaccard≥0.7 触发 supersede）。"""
+    pairs = [("咖啡", "提神"), ("跑步", "晨练"), ("读书", "历史"), ("旅行", "露营"),
+             ("摄影", "夜景"), ("编程", "Python"), ("园艺", "多肉"), ("烹饪", "川菜"),
+             ("音乐", "古典"), ("绘画", "水彩")]
+    for a, b in pairs:
+        store.add(f"用户喜欢{a}与{b}", category="preference")
+    p = store.persona(per_category=3, max_facts=20)
+    assert len(p["categories"]["preference"]) == 3
+    assert p["total"] == 3

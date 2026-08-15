@@ -5,6 +5,7 @@
   - shibei_search            : 语义搜索
   - shibei_import            : 导入文档
   - shibei_list_sources      : 列出已入库文件
+  - shibei_persona           : 轻量画像（按类别聚合的记忆摘要）
   - shibei_dream             : 知识库洞察 + 整理建议（skill 形式，零 LLM 依赖）
   - shibei_remember          : 写入 Agent 对话记忆
   - shibei_update_memory     : 更新/压缩已有记忆
@@ -24,6 +25,8 @@
 import json
 import sys
 import os
+import uuid
+from datetime import datetime
 
 from .config import load_config
 from .services import Shibei
@@ -43,12 +46,33 @@ def _handle_search(brain, args):
 
 
 def _handle_context(brain, args):
-    return brain.context(
+    result = brain.context(
         message=args.get("message", ""),
         limit=args.get("limit", 5),
         tag=args.get("tag"),
         write_hints=args.get("write_hints", True),
         query=args.get("query"),
+    )
+    # 自动记忆抽取（P1，可选，默认关）：检测到第一人称披露时用 LLM 提取并写入
+    cfg = getattr(brain, "config", None)
+    am = getattr(cfg, "auto_memory", None) if cfg is not None else None
+    if am is not None and am.enabled and (result.get("suggest_remember") or {}).get("should"):
+        try:
+            written = brain.auto_remember(args.get("message", ""))
+            if written:
+                result["auto_remembered"] = [
+                    {"id": w.get("id"), "fact": w.get("fact")} for w in written
+                ]
+        except Exception as e:  # noqa: BLE001
+            import logging
+            logging.getLogger(__name__).warning("自动记忆抽取失败: %s", e)
+    return result
+
+
+def _handle_persona(brain, args):
+    return brain.persona(
+        per_category=args.get("per_category", 5),
+        max_facts=args.get("max_facts", 20),
     )
 
 
@@ -96,6 +120,7 @@ def _handle_remember(brain, args):
         source=args.get("source", ""),
         tags=args.get("tags", ""),
         expires_at=args.get("expires_at"),
+        source_message_ids=args.get("source_message_ids", ""),
     )
 
 
@@ -206,6 +231,25 @@ TOOLS = {
                     "type": "integer",
                     "default": 0,
                     "description": "分页偏移",
+                },
+            },
+        },
+    },
+    "shibei_persona": {
+        "handler": _handle_persona,
+        "description": "轻量画像 — 按类别聚合长期记忆中的高密度事实（偏好/项目/技术栈…），零 LLM 依赖。适合在长时间对话或跨会话开始时快速了解用户，对标 TencentDB 的 L3 Persona。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "per_category": {
+                    "type": "integer",
+                    "default": 5,
+                    "description": "每个类别最多返回几条事实",
+                },
+                "max_facts": {
+                    "type": "integer",
+                    "default": 20,
+                    "description": "画像总事实数上限",
                 },
             },
         },
@@ -331,6 +375,10 @@ TOOLS = {
                     "type": "string",
                     "description": "逗号分隔标签，如 '面试,Redis'",
                 },
+                "source_message_ids": {
+                    "type": "string",
+                    "description": "溯源：触发该记忆的原始消息 ID（逗号分隔）。召回时随记忆返回，便于回溯到原始对话。",
+                },
                 "expires_at": {
                     "type": "string",
                     "description": "过期时间 ISO 8601（可选）",
@@ -362,6 +410,53 @@ TOOLS = {
         },
     },
 }
+
+
+def _compact_result(result, keep: int) -> dict:
+    """递归截断结果中的长文本字段，生成紧凑版（用于上下文卸载后的响应）。"""
+    if isinstance(result, dict):
+        return {k: _compact_result(v, keep) for k, v in result.items()}
+    if isinstance(result, list):
+        return [_compact_result(v, keep) for v in result]
+    if isinstance(result, str) and len(result) > keep:
+        return result[:keep] + "…"
+    return result
+
+
+def _maybe_offload(brain, result) -> dict:
+    """结果过大时写入 <db>/offload/<id>.json，返回紧凑摘要 + 引用路径。
+
+    对标 TencentDB 的短期上下文卸载：完整证据落盘，上下文只留摘要，
+    需要完整内容时宿主可读取该文件（Agent 自带文件访问能力）。
+    """
+    cfg = getattr(brain, "config", None)
+    if cfg is None or not getattr(cfg, "offload", None) or not cfg.offload.enabled:
+        return result
+
+    text = json.dumps(result, ensure_ascii=False)
+    size = len(text.encode("utf-8"))
+    if size <= cfg.offload.max_bytes:
+        return result
+
+    offload_dir = cfg.db_path_expanded / "offload"
+    offload_dir.mkdir(parents=True, exist_ok=True)
+    off_id = f"{datetime.now():%Y%m%dT%H%M%S}-{uuid.uuid4().hex[:8]}"
+    path = offload_dir / f"{off_id}.json"
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(text)
+    except OSError as exc:
+        import logging
+        logging.getLogger(__name__).warning("上下文卸载写文件失败: %s", exc)
+        return result
+
+    compact = _compact_result(result, cfg.offload.keep_summary_text)
+    compact["offloaded"] = {
+        "path": str(path),
+        "bytes": size,
+        "note": "完整结果已卸载到该文件，上下文仅保留摘要；如需完整内容请读取该文件",
+    }
+    return compact
 
 
 def _handle_request(brain, req) -> 'dict | None':
@@ -425,6 +520,8 @@ def _handle_request(brain, req) -> 'dict | None':
             }
         try:
             result = TOOLS[tool_name]["handler"](brain, arguments)
+            # 上下文卸载：结果过大时落盘 + 返回紧凑摘要（仅对结果型工具生效）
+            result = _maybe_offload(brain, result)
             return {
                 "jsonrpc": "2.0",
                 "id": req_id,

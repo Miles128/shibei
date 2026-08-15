@@ -219,3 +219,68 @@ def test_replace_by_rowids_atomic(tmp_path):
     # 合并内容可被检索到
     hits = bm.search("合并后的完整")
     assert len(hits) == 1
+
+
+# ---- P1 向量混合检索（确定性假向量，无外部依赖） ----
+
+def _fake_vec(i: int, dim: int = 8) -> list[float]:
+    """确定性假向量：每个 i 一个单位向量，便于断言相似度排序。"""
+    v = [0.0] * dim
+    v[i % dim] = 1.0
+    return v
+
+
+def test_store_and_search_embeddings(tmp_path):
+    """向量入库 + 余弦 top-k 检索（BLOB 编解码往返）。"""
+    bm = _index(tmp_path, [
+        ("a.md", "a.md", "ai", "内容 A", "", ""),
+        ("b.md", "b.md", "ai", "内容 B", "", ""),
+        ("c.md", "c.md", "ai", "内容 C", "", ""),
+    ])
+    bm.store_embeddings([(1, _fake_vec(0)), (2, _fake_vec(1)), (3, _fake_vec(2))])
+    assert bm.count_embeddings() == 3
+    hits = bm.search_embeddings(_fake_vec(1), limit=2)
+    assert hits[0][0] == 2  # 与 query 向量相同 → 相似度最高
+    assert hits[0][1] > hits[1][1]
+
+
+def test_search_embeddings_tag_filter(tmp_path):
+    """向量检索支持 tag 精确过滤。"""
+    bm = _index(tmp_path, [
+        ("a.md", "a.md", "ai", "内容 A", "", ""),
+        ("b.md", "b.md", "daily", "内容 B", "", ""),
+    ])
+    bm.store_embeddings([(1, _fake_vec(0)), (2, _fake_vec(0))])
+    hits = bm.search_embeddings(_fake_vec(0), limit=5, tag="ai")
+    assert [r for r, _ in hits] == [1]
+
+
+def test_search_hybrid_three_way_rrf(tmp_path):
+    """hybrid：向量命中但 BM25 未命中的 rowid 也能进入结果（三路 RRF 覆盖）。"""
+    bm = _index(tmp_path, [
+        ("a.md", "a.md", "ai", "Redis 缓存面试内容", "", ""),
+        ("b.md", "b.md", "ai", "Redis 分布式锁", "", ""),
+        ("c.md", "c.md", "finance", "银行风控模型", "", ""),
+    ])
+    # 让 c 与查询向量最相似（但 BM25 不命中"缓存"）
+    bm.store_embeddings([(1, _fake_vec(1)), (2, _fake_vec(2)), (3, _fake_vec(0))])
+    results = bm.search_hybrid(
+        "缓存", limit=5, tokenized_query='"缓存"', query_vec=_fake_vec(0)
+    )
+    rowids = [r["_rowid"] for r in results]
+    assert 3 in rowids  # 纯 BM25 不会返回 3，hybrid 会
+    # 仅向量命中的行必须带真实原文（不能是空文本占位）
+    hit3 = next(r for r in results if r["_rowid"] == 3)
+    assert "银行" in hit3["text"]
+
+
+def test_delete_cleans_embeddings(tmp_path):
+    """删除 chunk 时联动清理向量。"""
+    bm = _index(tmp_path, [
+        ("a.md", "a.md", "ai", "内容 A", "", ""),
+        ("b.md", "b.md", "ai", "内容 B", "", ""),
+    ])
+    bm.store_embeddings([(1, _fake_vec(0)), (2, _fake_vec(1))])
+    bm.delete_by_rowids([1])
+    assert bm.count_embeddings() == 1
+    assert bm.existing_rowids([1]) == set()

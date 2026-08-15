@@ -164,6 +164,23 @@ def build_context(
             item["text"] = text[:240] + "…"
         memories.append(item)
 
+    # 轻量画像层（P0）：按类别聚合的高密度事实，答前随包注入
+    persona = None
+    try:
+        from .memory import MemoryStore
+
+        p = MemoryStore(cfg.db_path_expanded).persona()
+        if p.get("total"):
+            persona = {
+                "categories": {
+                    cat: [f["fact"][:120] for f in facts]
+                    for cat, facts in p["categories"].items()
+                },
+                "total": p["total"],
+            }
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("persona 聚合失败: %s", exc)
+
     pack = {
         "message": message,
         "query_used": search_result.get("query_used", query),
@@ -172,6 +189,8 @@ def build_context(
         "memories": memories,
         "related": search_result.get("related", []),
     }
+    if persona:
+        pack["persona"] = persona
     if "rewrite" in search_result:
         pack["rewrite"] = search_result["rewrite"]
     if "llm_rewrite" in search_result:

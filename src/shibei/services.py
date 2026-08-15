@@ -101,8 +101,12 @@ class Shibei:
         source: str = "",
         tags: str = "",
         expires_at: 'str | None' = None,
+        source_message_ids: str = "",
     ) -> dict:
-        """写入一条 Agent 对话记忆。"""
+        """写入一条 Agent 对话记忆。
+
+        source_message_ids: 溯源字段，触发该记忆的原始消息 ID（对标 TencentDB L1 溯源链）。
+        """
         store = self._memory_store()
         return store.add(
             fact=fact,
@@ -110,7 +114,75 @@ class Shibei:
             source=source,
             tags=tags,
             expires_at=expires_at,
+            source_message_ids=source_message_ids,
         )
+
+    def persona(
+        self,
+        per_category: int = 5,
+        max_facts: int = 20,
+    ) -> dict:
+        """轻量画像层：按类别聚合有效记忆（零 LLM）。"""
+        return self._memory_store().persona(
+            per_category=per_category, max_facts=max_facts
+        )
+
+    def auto_remember(self, message: str) -> list[dict]:
+        """自动记忆抽取（P1，默认关闭）：用 LLM 从消息抽取事实并写入。
+
+        仅当 config.auto_memory.enabled 且设置了 SHIBEI_LLM_API_KEY 时生效；
+        抽取失败或没有新事实返回空列表，不抛异常。
+        """
+        am = self.config.auto_memory
+        if not am.enabled:
+            return []
+        from .llm import LLMClient, LLMOptions
+        from .memory import MemoryStore
+
+        try:
+            client = LLMClient(LLMOptions(
+                base_url=self.config.llm.base_url,
+                model=self.config.llm.model,
+                timeout=self.config.llm.timeout,
+                temperature=0.0,
+                max_tokens=200,
+            ))
+            prompt = (
+                "从下面的用户消息中，提取值得长期记住的客观事实"
+                "（偏好、习惯、目标、项目背景、关键决策、技术栈等）。\n"
+                "规则：\n"
+                "1. 用简洁第三人称陈述句，一条一行，不要编号\n"
+                "2. 忽略寒暄、提问、无信息量内容\n"
+                f"3. 最多输出 {am.max_facts} 条；没有可记的事实输出空行\n\n"
+                f"用户消息：{message[:2000]}"
+            )
+            raw = client.chat([
+                {"role": "system", "content": "你是记忆提取器，只输出事实列表。"},
+                {"role": "user", "content": prompt},
+            ])
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("自动记忆抽取失败: %s", exc)
+            return []
+
+        store = MemoryStore(self.config.db_path_expanded)
+        written = []
+        for line in raw.splitlines():
+            fact = line.strip().lstrip("-•*0123456789. ")
+            if not fact or len(fact) < 4:
+                continue
+            try:
+                written.append(store.add(
+                    fact=fact,
+                    category=am.category,
+                    source=am.source,
+                    tags=am.category,
+                    source_message_ids="auto",
+                ))
+            except ValueError:
+                continue
+            if len(written) >= am.max_facts:
+                break
+        return written
 
     def search_memories(self, query: str, limit: int = 5,
                         category: 'str | None' = None) -> list[dict]:

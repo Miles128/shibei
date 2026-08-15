@@ -227,7 +227,35 @@ class Importer:
             bm25.remove_sources(sources_to_clear)
 
         if chunks_data:
-            bm25.add_batch(chunks_data)
+            new_rowids = bm25.add_batch(chunks_data)
+            # 轻量向量混合（可选）：为新 chunk 生成 embedding
+            if self.cfg.vector.enabled and new_rowids:
+                self._embed_chunks(bm25, new_rowids, chunks_data)
+
+    def _embed_chunks(self, bm25, new_rowids: list[int], chunks_data: list):
+        """为新增 chunk 批量生成向量并入库；失败只告警，不影响导入。"""
+        try:
+            from .embedding import Embedder
+
+            embedder = Embedder(
+                provider=self.cfg.vector.provider,
+                model=self.cfg.vector.model,
+                base_url=self.cfg.llm.base_url,
+                timeout=self.cfg.llm.timeout,
+                batch_size=self.cfg.vector.batch_size,
+            )
+            if not embedder.available():
+                logger.warning("vector 已启用但 embedding 不可用（检查 SHIBEI_LLM_API_KEY 或 fastembed），跳过向量索引")
+                return
+            contents = [c[3] for c in chunks_data]
+            vectors = embedder.embed(contents)
+            if not vectors or len(vectors) != len(new_rowids):
+                logger.warning("embedding 数量不匹配（%s vs %s），跳过向量索引",
+                               len(vectors or []), len(new_rowids))
+                return
+            bm25.store_embeddings(list(zip(new_rowids, vectors)))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("chunk 向量索引失败，降级纯 BM25: %s", exc)
 
 
 def clean_orphans(

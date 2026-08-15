@@ -121,6 +121,7 @@ def cmd_remember(args):
         source=args.source,
         tags=args.tags,
         expires_at=args.expires_at,
+        source_message_ids=args.source_message_ids,
     )
     print(f"✅ 已记住 ({result['id'][:8]})")
     print(f"   {result['fact']}")
@@ -194,6 +195,23 @@ def cmd_memories_forget(args):
         print(f"✅ 已删除记忆 {args.memory_id}")
     else:
         print(f"❌ 未找到记忆 {args.memory_id}")
+
+
+def cmd_persona(args):
+    """轻量画像：按类别聚合长期记忆（零 LLM）"""
+    brain = Shibei(args.resolved_config)
+    p = brain.persona(per_category=args.per_category, max_facts=args.max_facts)
+
+    if not p.get("total"):
+        print("画像为空，先用 shibei remember 写入一些记忆")
+        return
+
+    print(f"👤 画像（{p['total']} 条事实）")
+    for cat, facts in p["categories"].items():
+        print(f"\n[{cat}]")
+        for f in facts:
+            src = f" (src: {f['source_message_ids']})" if f.get("source_message_ids") else ""
+            print(f"  • {f['fact']}{src}")
 
 
 def cmd_import(args):
@@ -573,6 +591,15 @@ def main():
     p_remember.add_argument("--source", default="", help="来源会话ID")
     p_remember.add_argument("--tags", default="", help="逗号分隔标签")
     p_remember.add_argument("--expires-at", default=None, help="过期时间 ISO 8601")
+    p_remember.add_argument("--source-message-ids", default="",
+                            help="溯源：触发该记忆的原始消息 ID（逗号分隔）")
+
+    # persona（轻量画像）
+    p_persona = sub.add_parser("persona", help="轻量画像：按类别聚合长期记忆（零 LLM）")
+    p_persona.add_argument("--per-category", type=int, default=5,
+                           help="每个类别最多返回几条事实（默认 5）")
+    p_persona.add_argument("--max-facts", type=int, default=20,
+                           help="画像总事实数上限（默认 20）")
 
     # update-memory
     p_update = sub.add_parser("update-memory", help="更新/压缩一条已有记忆（MCP: shibei_update_memory）")
@@ -697,6 +724,7 @@ def main():
         "list": cmd_list,
         "clean": cmd_clean,
         "remember": cmd_remember,
+        "persona": cmd_persona,
         "update-memory": cmd_update_memory,
         "consolidate": cmd_consolidate,
         "apply-consolidation": cmd_apply_consolidation,
