@@ -25,7 +25,7 @@ def _extract_query_terms(query: str, min_len: int = 2) -> list[str]:
     优先使用 jieba 精确分词；没有 jieba 时退化为：连续中文片段 + 英文/数字 token。
     这里不拆 bigram/单字，避免扩展后的查询过度膨胀；bigram/单字由后续 tokenize_query 负责。
     """
-    from .tokenizer import jieba_available
+    from .tokenizer import jieba_available, _iter_mixed_segments
 
     query = query.strip()
     if not query:
@@ -41,10 +41,9 @@ def _extract_query_terms(query: str, min_len: int = 2) -> list[str]:
 
     if jieba_available():
         import jieba
-        for chunk in _CHINESE_RE.split(query):
-            if not chunk:
-                continue
+        for chunk in _iter_mixed_segments(query):
             if _CHINESE_RE.fullmatch(chunk):
+                add(chunk)
                 for t in jieba.cut(chunk):
                     t = t.strip()
                     if t:

@@ -159,10 +159,10 @@ class Importer:
 
         # 精确去重：跳过内容完全相同的 chunk
         hash_store = ChunkHashStore(self.cfg.db_path_expanded)
-        # full 模式下清空 hash store，重新建立
         if full:
-            for fp in to_remove:
-                hash_store.remove_by_source(fp)
+            # full 模式：清空全部 hash，从零重建（否则旧 hash 会让存量 chunk 被跳过，
+            # chunking 配置变更后新旧 chunk 会在索引中重复）
+            hash_store.clear()
         else:
             # 删除已移除文件的旧 hash
             for fp in to_remove:
@@ -184,7 +184,7 @@ class Importer:
 
         # 需要清理旧 chunk 的 source：已删除文件 + 内容变更文件
         sources_to_clear = list(to_remove) + [str(f) for f in to_update]
-        self._import_bm25(chunks_data, sources_to_clear)
+        self._import_bm25(chunks_data, sources_to_clear, full=full)
 
         # manifest 统一更新一次
         for fp in to_remove:
@@ -208,15 +208,22 @@ class Importer:
             result["warnings"] = warnings
         return result
 
-    def _import_bm25(self, chunks_data: list, sources_to_clear: list[str]):
-        """把分块写入 BM25 索引，并删除已移除/变更文件的旧 chunk。"""
+    def _import_bm25(self, chunks_data: list, sources_to_clear: list[str],
+                     full: bool = False):
+        """把分块写入 BM25 索引，并删除已移除/变更文件的旧 chunk。
+
+        full=True 时直接清空整个索引再重建（真正的全量重建），
+        而不是只删 to_remove 文件——否则存量 chunk 会残留、与新导入重复。
+        """
         from .bm25 import BM25Index
 
         db_path = self.cfg.db_path_expanded / "fts5.db"
         bm25 = BM25Index(str(db_path))
 
-        # 批量删除旧 chunk（整传入 list，避免按字符拆分）
-        if sources_to_clear:
+        if full:
+            bm25.clear()
+        elif sources_to_clear:
+            # 批量删除旧 chunk（整传入 list，避免按字符拆分）
             bm25.remove_sources(sources_to_clear)
 
         if chunks_data:

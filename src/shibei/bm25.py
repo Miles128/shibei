@@ -146,6 +146,9 @@ class BM25Index:
             tokenized_query: 若提供则直接使用该 tokenized 表达式，跳过内部 tokenize_query。
         """
         tokenized = tokenized_query if tokenized_query is not None else tokenize_query(query)
+        # 噪音查询（如 "###"）分词后为空：直接短路，避免 MATCH '' 抛 FTS5 语法错误
+        if not tokenized.strip():
+            return []
         content_rows = self._search_field("content_tokens", tokenized, limit * 3, tag)
         summary_rows = self._search_field("summary_tokens", tokenized, limit * 3, tag)
         return self._rrf_fuse_rows(content_rows, summary_rows, limit)
@@ -166,11 +169,12 @@ class BM25Index:
                            c.parent_text, c.parent_id, f.rank
                     FROM {FTS_TABLE} f
                     JOIN {CONTENT_TABLE} c ON f.rowid = c.rowid
-                    WHERE {FTS_TABLE} MATCH ? AND c.tags LIKE ?
+                    WHERE {FTS_TABLE} MATCH ? AND (',' || c.tags || ',') LIKE ?
                     ORDER BY f.rank
                     LIMIT ?
                 """
-                rows = conn.execute(sql, (match_expr, f"%{tag}%", limit)).fetchall()
+                # 标签精确边界匹配：",ai," 命中 ",ai," 但不命中 ",daily,"
+                rows = conn.execute(sql, (match_expr, f"%,{tag},%", limit)).fetchall()
             else:
                 sql = f"""
                     SELECT c.rowid, c.source, c.file_path, c.tags, c.content,
@@ -196,7 +200,8 @@ class BM25Index:
             "_rowid": row[0],
             "source": source,
             "file_path": file_path,
-            "score": round(1.0 / (1.0 + abs(rank)) if rank else 1.0, 3),
+            # FTS5 bm25 rank 越负越相关：score = -rank 使「分越高越相关」
+            "score": round(-rank, 3) if rank else 0.0,
             "tags": tags,
             "text": content[:300],
         }
@@ -306,5 +311,46 @@ class BM25Index:
                 f"DELETE FROM {CONTENT_TABLE} WHERE rowid IN ({placeholders})",
                 rowids,
             )
+            self._rebuild_fts_index(conn)
+            conn.commit()
+
+    def existing_rowids(self, rowids: list[int]) -> set[int]:
+        """返回 rowids 中确实存在于 content 表的子集（用于外部输入校验）。"""
+        if not rowids:
+            return set()
+        with sqlite3.connect(self.db_path, timeout=30.0) as conn:
+            placeholders = ",".join("?" * len(rowids))
+            rows = conn.execute(
+                f"SELECT rowid FROM {CONTENT_TABLE} WHERE rowid IN ({placeholders})",
+                rowids,
+            ).fetchall()
+        return {r[0] for r in rows}
+
+    def replace_by_rowids(self, rowids: list[int], items: list):
+        """事务内原子完成「删除指定 rowids 的 chunks + 插入新 items」并重建 FTS 索引。
+
+        供 consolidate / apply_consolidation 使用：避免分两次连接提交，
+        中途异常导致旧 chunk 已删、新 chunk 未写入的中间状态。
+        """
+        if not rowids and not items:
+            return
+        with sqlite3.connect(self.db_path, timeout=30.0) as conn:
+            if rowids:
+                placeholders = ",".join("?" * len(rowids))
+                conn.execute(
+                    f"DELETE FROM {CONTENT_TABLE} WHERE rowid IN ({placeholders})",
+                    rowids,
+                )
+            for item in items:
+                source, file_path, tags, content = item[0], item[1], item[2], item[3]
+                parent_text = item[4] if len(item) > 4 else ""
+                parent_id = item[5] if len(item) > 5 else ""
+                summary = item[6] if len(item) > 6 else ""
+                conn.execute(
+                    f"INSERT INTO {CONTENT_TABLE} "
+                    f"(source, file_path, tags, content, parent_text, parent_id, {SUMMARY_COL}) "
+                    f"VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (source, file_path, tags, content, parent_text, parent_id, summary),
+                )
             self._rebuild_fts_index(conn)
             conn.commit()

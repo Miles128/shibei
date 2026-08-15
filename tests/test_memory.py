@@ -46,8 +46,8 @@ def test_search_by_category(store):
 
 
 def test_supersedes_chain(store):
-    old = store.add("用户喜欢的编程语言是 Python", category="user", supersede_threshold=0.5)
-    new = store.add("用户喜欢的编程语言已改为 Go", category="user", supersede_threshold=0.5)
+    old = store.add("用户喜欢的编程语言是 Python", category="user", supersede_threshold=0.4)
+    new = store.add("用户喜欢的编程语言已改为 Go", category="user", supersede_threshold=0.4)
 
     assert new["supersedes"] == old["id"]
     old_updated = store.get(old["id"])
@@ -60,8 +60,8 @@ def test_supersedes_chain(store):
 
 
 def test_list_exclude_superseded(store):
-    old = store.add("用户喜欢的编程语言是 Python", category="user", supersede_threshold=0.5)
-    store.add("用户喜欢的编程语言已改为 Go", category="user", supersede_threshold=0.5)
+    old = store.add("用户喜欢的编程语言是 Python", category="user", supersede_threshold=0.4)
+    store.add("用户喜欢的编程语言已改为 Go", category="user", supersede_threshold=0.4)
 
     all_active = store.list()
     assert len(all_active) == 1
@@ -79,9 +79,9 @@ def test_forget(store):
 
 
 def test_count(store):
-    store.add("记忆1", category="user", supersede_threshold=0.95)
-    store.add("记忆2", category="user", supersede_threshold=0.95)
-    store.add("记忆3", category="project", supersede_threshold=0.95)
+    store.add("用户偏好颜色是红色", category="user", supersede_threshold=0.95)
+    store.add("用户偏好颜色是蓝色", category="user", supersede_threshold=0.95)
+    store.add("项目代号是 Lumina", category="project", supersede_threshold=0.95)
     assert store.count() == 3
     assert store.count("user") == 2
     assert store.count("project") == 1
@@ -129,22 +129,22 @@ def test_find_compressible_candidates(store):
     old = (datetime.now(timezone.utc) - timedelta(days=60)).isoformat(timespec="seconds")
     recent = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat(timespec="seconds")
 
-    store.add("旧记忆 A", category="user", created_at=old, supersede_threshold=0.95)
-    store.add("旧记忆 B", category="user", created_at=old, supersede_threshold=0.95)
-    store.add("新记忆 C", category="user", created_at=recent, supersede_threshold=0.95)
+    store.add("旧记忆主题 A 的内容", category="user", created_at=old, supersede_threshold=0.95)
+    store.add("旧记忆主题 B 的内容", category="user", created_at=old, supersede_threshold=0.95)
+    store.add("新记忆主题 C 的内容", category="user", created_at=recent, supersede_threshold=0.95)
 
     candidates = store.find_compressible(max_age_days=30, keep_recent=0)
     assert len(candidates) == 2
     facts = {c["fact"] for c in candidates}
-    assert "旧记忆 A" in facts
-    assert "旧记忆 B" in facts
+    assert "旧记忆主题 A 的内容" in facts
+    assert "旧记忆主题 B 的内容" in facts
 
 
 def test_find_compressible_keeps_recent(store):
     """find_compressible 会保留最近 keep_recent 条。"""
     old = (datetime.now(timezone.utc) - timedelta(days=60)).isoformat(timespec="seconds")
-    for i in range(5):
-        store.add(f"旧记忆 {i} 的内容 {i}", category="user", created_at=old, supersede_threshold=0.95)
+    for i, topic in enumerate(["Alpha", "Beta", "Gamma", "Delta", "Epsilon"]):
+        store.add(f"旧记忆主题 {topic} 的内容", category="user", created_at=old, supersede_threshold=0.95)
 
     candidates = store.find_compressible(max_age_days=30, keep_recent=2)
     assert len(candidates) == 3
@@ -165,3 +165,38 @@ def test_update_memory(store):
     assert results[0]["id"] == r["id"]
 
 
+
+
+def test_score_higher_means_more_relevant(store):
+    """记忆 score 应单调递增于相关度（修复 memory.py score 反转）。"""
+    store.add("用户喜欢使用 Python 做后端开发", tags="tech")
+    store.add("用户喜欢使用 Go 做后端开发", tags="tech")
+    results = store.search("Python 后端")
+    assert len(results) >= 1
+    scores = [r["score"] for r in results]
+    assert scores == sorted(scores, reverse=True)
+
+
+def test_cleanup_expired_parses_iso_variants(store):
+    """过期清理应按 datetime 语义比较：兼容省略时区/不同偏移的 ISO 格式。"""
+    now = datetime.now(timezone.utc)
+    store.add("已过期 1（带时区）", expires_at=(now - timedelta(days=1)).isoformat())
+    store.add("已过期 2（无时区）", expires_at=(now - timedelta(days=1)).replace(tzinfo=None).isoformat(timespec="seconds"))
+    store.add("已过期 3（+08:00 偏移）", expires_at=(now - timedelta(days=1)).astimezone(timezone(timedelta(hours=8))).isoformat(timespec="seconds"))
+    store.add("未过期", expires_at=(now + timedelta(days=1)).isoformat())
+    store.add("格式非法", expires_at="not-a-date")
+
+    deleted = store.cleanup_expired(now=now)
+    assert deleted == 3
+    remaining = {m["fact"] for m in store.list(limit=10, include_superseded=True)}
+    assert {"未过期", "格式非法"} <= remaining
+
+
+def test_delete_with_like_wildcards_does_not_mismatch(store):
+    """memory_id 中的 LIKE 通配符应被转义，防止前缀匹配误删多条。"""
+    r1 = store.add("记忆 A", tags="t1")
+    r2 = store.add("记忆 B", tags="t2")
+    # 用带 % 的假前缀删除：不应误匹配任何真实 id
+    assert store.delete("%" + r1["id"][4:8]) is False
+    assert store.get(r1["id"]) is not None
+    assert store.get(r2["id"]) is not None

@@ -31,6 +31,23 @@ MEMORIES_TABLE = "memories"
 FTS_TABLE = "memories_fts"
 
 
+def _escape_like(s: str) -> str:
+    """转义 LIKE 模式中的通配符（% _ \），防止前缀匹配误伤。"""
+    return s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _parse_dt(s: str) -> Optional[datetime]:
+    """解析 ISO 8601 字符串为带时区的 datetime；无法解析返回 None。"""
+    try:
+        dt = datetime.fromisoformat(s)
+    except (ValueError, TypeError):
+        return None
+    if dt.tzinfo is None:
+        # 无时区信息视为 UTC（与写入端一致）
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
 class AbstractMemoryStore(ABC):
     """对话记忆存储抽象接口。"""
 
@@ -210,6 +227,23 @@ class MemoryStore(AbstractMemoryStore):
             ).fetchone()
             return row[0] if row else None
 
+    def _rebuild_fts_index(self, conn: sqlite3.Connection):
+        """重建 memories_fts 索引：清空后从 memories 内容表重新索引。
+
+        memories_fts 是 external content 表且存的是预分词文本，普通 DELETE
+        会在连续删除时触发 'database disk image is malformed'（与 chunks_fts
+        contentless 表同类问题，见 bm25.py）。统一用 delete-all + 重建，稳定且幂等。
+        """
+        conn.execute(f"INSERT INTO {FTS_TABLE}({FTS_TABLE}) VALUES('delete-all')")
+        rows = conn.execute(
+            f"SELECT rowid, fact, tags, category FROM {MEMORIES_TABLE}"
+        ).fetchall()
+        for rowid, fact, tags, category in rows:
+            conn.execute(
+                f"INSERT INTO {FTS_TABLE}(rowid, fact, tags, category) VALUES (?, ?, ?, ?)",
+                (rowid, tokenize_text(fact), tokenize_text(tags or ""), category or ""),
+            )
+
     @staticmethod
     def _escape_fts_query(query: str) -> str:
         """把查询字符串转成 FTS5 可识别的 token 串。"""
@@ -246,6 +280,10 @@ class MemoryStore(AbstractMemoryStore):
         """
         params: list = [self._escape_fts_query(query)]
 
+        if not params[0]:
+            # 噪音查询分词后为空：短路返回，避免 MATCH '' 抛 FTS5 语法错误
+            return []
+
         if category:
             sql += " AND m.category = ?"
             params.append(category)
@@ -266,7 +304,8 @@ class MemoryStore(AbstractMemoryStore):
             if raw_rank is None:
                 score = 0.0
             else:
-                score = 1.0 / (1.0 + abs(float(raw_rank)))
+                # FTS5 bm25 rank 越负越相关：score = -rank 使「分越高越相关」
+                score = round(-float(raw_rank), 3)
             results.append({
                 "id": row["id"],
                 "fact": row["fact"],
@@ -317,13 +356,18 @@ class MemoryStore(AbstractMemoryStore):
         return self.delete(memory_id)
 
     def delete(self, memory_id: str) -> bool:
-        """删除一条记忆及其 FTS 索引（实现 AbstractMemoryStore 接口）。"""
+        """删除一条记忆及其 FTS 索引（实现 AbstractMemoryStore 接口）。
+
+        支持 UUID 前缀匹配（CLI 打印的 id 前 8 位）；对 LIKE 通配符转义，
+        避免用户输入中的 % / _ 误匹配多条。
+        """
         rowid = self._rowid_by_id(memory_id)
         if rowid is None:
             with sqlite3.connect(str(self.db_file), timeout=30.0) as conn:
+                escaped = _escape_like(memory_id)
                 row = conn.execute(
-                    f"SELECT rowid FROM {MEMORIES_TABLE} WHERE id LIKE ?",
-                    (f"{memory_id}%",),
+                    f"SELECT rowid FROM {MEMORIES_TABLE} WHERE id LIKE ? ESCAPE '\\'",
+                    (f"{escaped}%",),
                 ).fetchone()
                 if row:
                     rowid = row[0]
@@ -331,18 +375,20 @@ class MemoryStore(AbstractMemoryStore):
                     return False
 
         with sqlite3.connect(str(self.db_file), timeout=30.0) as conn:
-            conn.execute(f"DELETE FROM {FTS_TABLE} WHERE rowid = ?", (rowid,))
             cur = conn.execute(
                 f"DELETE FROM {MEMORIES_TABLE} WHERE rowid = ?", (rowid,)
             )
+            escaped = _escape_like(memory_id)
             conn.execute(
                 f"UPDATE {MEMORIES_TABLE} SET superseded_by = '' WHERE superseded_by = ?",
                 (memory_id,),
             )
             conn.execute(
-                f"UPDATE {MEMORIES_TABLE} SET superseded_by = '' WHERE superseded_by LIKE ?",
-                (f"{memory_id}%",),
+                f"UPDATE {MEMORIES_TABLE} SET superseded_by = '' "
+                f"WHERE superseded_by LIKE ? ESCAPE '\\'",
+                (f"{escaped}%",),
             )
+            self._rebuild_fts_index(conn)
             conn.commit()
             return cur.rowcount > 0
 
@@ -358,29 +404,39 @@ class MemoryStore(AbstractMemoryStore):
             return row[0] if row else 0
 
     def cleanup_expired(self, now: Optional[datetime] = None) -> int:
-        """删除已经过期的记忆，返回删除条数。"""
+        """删除已经过期的记忆，返回删除条数。
+
+        按 datetime 语义比较（而非 ISO 字符串字典序），兼容不同时区偏移
+        与省略秒/时区的写入格式；无法解析的 expires_at 视为不过期。
+        先删内容表，再一次性重建 FTS 索引（避免连续 DELETE 损坏索引）。
+        """
         if now is None:
             now = datetime.now(timezone.utc)
-        now_str = now.isoformat(timespec="seconds")
 
         with sqlite3.connect(str(self.db_file), timeout=30.0) as conn:
             rows = conn.execute(
                 f"""
-                SELECT rowid, id FROM {MEMORIES_TABLE}
+                SELECT rowid, expires_at FROM {MEMORIES_TABLE}
                 WHERE expires_at IS NOT NULL AND expires_at != ''
-                  AND expires_at <= ?
                   AND (superseded_by IS NULL OR superseded_by = '')
-                """,
-                (now_str,),
+                """
             ).fetchall()
 
-            deleted = 0
-            for rowid, memory_id in rows:
-                conn.execute(f"DELETE FROM {FTS_TABLE} WHERE rowid = ?", (rowid,))
-                conn.execute(f"DELETE FROM {MEMORIES_TABLE} WHERE rowid = ?", (rowid,))
-                deleted += 1
+            expired_rowids = []
+            for rowid, expires_at in rows:
+                exp = _parse_dt(expires_at)
+                if exp is not None and exp <= now:
+                    expired_rowids.append(rowid)
+
+            if expired_rowids:
+                placeholders = ",".join("?" * len(expired_rowids))
+                conn.execute(
+                    f"DELETE FROM {MEMORIES_TABLE} WHERE rowid IN ({placeholders})",
+                    expired_rowids,
+                )
+                self._rebuild_fts_index(conn)
             conn.commit()
-        return deleted
+        return len(expired_rowids)
 
     def find_compressible(
         self,
@@ -432,8 +488,6 @@ class MemoryStore(AbstractMemoryStore):
         category = old.get("category", "") or "user"
 
         with sqlite3.connect(str(self.db_file), timeout=30.0) as conn:
-            # 先删 FTS 旧索引
-            conn.execute(f"DELETE FROM {FTS_TABLE} WHERE rowid = ?", (rowid,))
             conn.execute(
                 f"""
                 UPDATE {MEMORIES_TABLE}
@@ -442,9 +496,7 @@ class MemoryStore(AbstractMemoryStore):
                 """,
                 (fact, new_tags, rowid),
             )
-            conn.execute(
-                f"INSERT INTO {FTS_TABLE}(rowid, fact, tags, category) VALUES (?, ?, ?, ?)",
-                (rowid, tokenize_text(fact), tokenize_text(new_tags), category),
-            )
+            # 内容变更后重建 FTS 索引（避免 FTS delete+insert 在 external content 表上的索引损坏）
+            self._rebuild_fts_index(conn)
             conn.commit()
         return True

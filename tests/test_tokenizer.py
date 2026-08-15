@@ -57,3 +57,19 @@ def test_extract_keywords_filters_heading_marks():
     assert "##" not in kws
     assert "###" not in kws
     assert "#" not in kws
+
+
+def test_tokenize_query_noise_returns_empty():
+    """纯噪音/纯符号查询应返回空串，避免 FTS5 MATCH 语法错误。"""
+    assert tokenize_query("###") == ""
+    assert tokenize_query("---") == ""
+    assert tokenize_query("!!!") == ""
+    assert tokenize_query("123456") == ""
+
+
+def test_tokenize_query_english_tokens_quoted():
+    """英文 token 应加引号，避免 OR/AND/NEAR 等被当作 FTS5 表达式关键字。"""
+    q = tokenize_query("Redis OR 缓存")
+    # 不再出现裸 OR 关键字，所有 token 都被引号包裹
+    assert '"Redis"' in q
+    assert '"OR"' in q

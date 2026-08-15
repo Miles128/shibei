@@ -71,6 +71,15 @@ class RewriterConfig:
 
 
 @dataclass
+class RelatedConfig:
+    """相关文档发现 — 默认关闭以加速召回。"""
+
+    enabled: bool = False       # 是否启用 related 关联发现
+    top_k: int = 1              # 对前几条命中结果计算关联（1 通常够用）
+    limit: int = 3              # 最多返回几条 related
+
+
+@dataclass
 class LLMConfig:
     """LLM 摘要生成配置。
 
@@ -117,6 +126,7 @@ class Config:
     tagging: TaggingConfig = field(default_factory=TaggingConfig)
     expander: ExpanderConfig = field(default_factory=ExpanderConfig)
     rewriter: RewriterConfig = field(default_factory=RewriterConfig)
+    related: RelatedConfig = field(default_factory=RelatedConfig)
     llm: LLMConfig = field(default_factory=LLMConfig)
 
     @property
@@ -196,6 +206,10 @@ def load_config(path: str = "config.yaml") -> Config:
                 for r in rw["rules"]
                 if isinstance(r, dict)
             ]
+
+    # Related 关联发现
+    if "related" in raw:
+        cfg.related = RelatedConfig(**raw["related"])
 
     # LLM 摘要
     if "llm" in raw:

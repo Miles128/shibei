@@ -111,12 +111,14 @@ def load_chunks_from_bm25(db_path: Path, max_chunks: int = 500) -> list[dict]:
 
     with sqlite3.connect(str(fts_db), timeout=30.0) as conn:
         total = conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
-        # 采样：均匀取 max_chunks 条
+        # 采样：超出上限时均匀随机取 max_chunks 条。
+        # 旧实现 rowid % step = 0 只取「步长整数倍」的 rowid（如全偶数行），
+        # 系统性丢失一半数据，且 rowid 不连续时覆盖不均。
         if total > max_chunks:
-            step = total // max_chunks
             rows = conn.execute(
                 f"SELECT rowid, source, file_path, tags, content FROM chunks "
-                f"WHERE rowid IN (SELECT rowid FROM chunks WHERE rowid % {step} = 0 LIMIT {max_chunks})"
+                f"ORDER BY RANDOM() LIMIT ?",
+                (max_chunks,),
             ).fetchall()
         else:
             rows = conn.execute(
@@ -130,7 +132,9 @@ def load_chunks_from_bm25(db_path: Path, max_chunks: int = 500) -> list[dict]:
             "source": source,
             "file_path": file_path,
             "tags": tags,
-            "text": content[:500],
+            # 保留完整 content：consolidator 的启发式合并摘要依赖它，
+            # 截断到 500 字会让合并结果静默丢失原文尾部（数据丢失）
+            "text": content,
             "keywords": extract_keywords(content),
         })
     return chunks

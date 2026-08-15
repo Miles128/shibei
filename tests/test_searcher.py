@@ -27,3 +27,27 @@ def test_searcher_bm25_basic():
         result = searcher.search("人工智能", limit=5)
         assert result["total"] >= 1
         assert result["query"] == "人工智能"
+
+
+def test_searcher_related_disabled_by_default():
+    """related 默认关闭，不触发 RelatedFinder。"""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db_path = _make_bm25_db(tmpdir)
+        cfg = Config(storage=StorageConfig(path=str(db_path)))
+        searcher = Searcher(cfg)
+        result = searcher.search("人工智能", limit=5)
+        assert result["related"] == []
+
+
+def test_searcher_related_enabled():
+    """related.enabled=true 时返回关联文档。"""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db_path = _make_bm25_db(tmpdir)
+        from shibei.config import RelatedConfig
+        cfg = Config(
+            storage=StorageConfig(path=str(db_path)),
+            related=RelatedConfig(enabled=True, top_k=1, limit=3),
+        )
+        searcher = Searcher(cfg)
+        result = searcher.search("人工智能", limit=5)
+        assert isinstance(result["related"], list)

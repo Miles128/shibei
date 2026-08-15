@@ -67,6 +67,12 @@ class ChunkHashStore:
             del self._data[h]
         return len(to_drop)
 
+    def clear(self) -> int:
+        """清空全部 hash（用于 --full 全量重建）。"""
+        n = len(self._data)
+        self._data = {}
+        return n
+
     def all_hashes(self) -> set[str]:
         return set(self._data.keys())
 

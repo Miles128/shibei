@@ -78,13 +78,19 @@ def test_expand_fuzzy():
 
 
 def test_expand_no_match_returns_original():
-    """无匹配时返回原查询"""
+    """无匹配时返回原查询（jieba 下可能拆成空格分隔的多词）"""
+    from shibei.tokenizer import jieba_available
+
     expander = QueryExpander(synonyms_path=None)
     expander.synonyms = {"手机": ["手机", "移动电话"]}
     expander._dictionary = {"手机", "移动电话"}
 
     result = expander.expand("银行风控")
-    assert result["expanded"] == "银行风控"
+    if jieba_available():
+        assert "银行" in result["expanded"]
+        assert "风控" in result["expanded"]
+    else:
+        assert result["expanded"] == "银行风控"
     assert not result["expansions"]
     assert not result["fuzzy"]
 
@@ -143,6 +149,6 @@ def test_searcher_with_fuzzy():
         )
         searcher = Searcher(cfg)
 
-        # 输入错别字 "人工智”，应通过 fuzzy 找到 "人工智能"
-        result = searcher.search("人工智", limit=5)
+        # 输入错别字 "人功智能"，应通过 fuzzy 找到 "人工智能"
+        result = searcher.search("人功智能", limit=5)
         assert result["total"] >= 1

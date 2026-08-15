@@ -207,8 +207,8 @@ def _apply_clusters(db_path: Path, clusters_to_apply: list) -> dict:
 
     try:
         bm25 = BM25Index(str(db_path / "fts5.db"))
-        bm25.delete_by_rowids(rowids_to_delete)
-        bm25.add_batch(new_items)
+        # 删除 + 插入放在同一事务内原子完成，避免中途异常导致半删状态
+        bm25.replace_by_rowids(rowids_to_delete, new_items)
         return {
             "applied": True,
             "removed": len(rowids_to_delete),
@@ -233,6 +233,7 @@ def apply_consolidation(db_path: Path, clusters: list[dict]) -> dict:
     """
     from .bm25 import BM25Index
 
+    bm25 = BM25Index(str(db_path / "fts5.db"))
     rowids_to_delete = []
     new_items = []
     timestamp = datetime.now().strftime("%Y%m%dT%H%M%S")
@@ -259,7 +260,18 @@ def apply_consolidation(db_path: Path, clusters: list[dict]) -> dict:
             invalid += 1
             continue
 
-        rowids_to_delete.extend(valid_rowids)
+        # 校验：rowid 必须真实存在，且不与已接受集群重复，防止外部输入误删
+        existing = bm25.existing_rowids(valid_rowids)
+        if not existing:
+            invalid += 1
+            continue
+        duplicate = existing & set(rowids_to_delete)
+        if duplicate:
+            invalid += 1
+            logger.warning("跳过集群：rowid 与已接受集群重复: %s", sorted(duplicate))
+            continue
+
+        rowids_to_delete.extend(sorted(existing))
         source_name = sources[0] if sources else "unknown"
         new_source = f"__consolidated__/{timestamp}/{idx}#{Path(source_name).name}"
         new_items.append((
@@ -281,9 +293,8 @@ def apply_consolidation(db_path: Path, clusters: list[dict]) -> dict:
         }
 
     try:
-        bm25 = BM25Index(str(db_path / "fts5.db"))
-        bm25.delete_by_rowids(rowids_to_delete)
-        bm25.add_batch(new_items)
+        # 删除 + 插入在同一事务内原子完成
+        bm25.replace_by_rowids(rowids_to_delete, new_items)
         return {
             "applied": True,
             "removed": len(rowids_to_delete),

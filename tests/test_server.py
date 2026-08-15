@@ -382,3 +382,52 @@ def test_server_initialized_notification_silenced(server_env, monkeypatch):
         [json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"})]
     )
     assert responses == []
+
+
+def test_server_ping(server_env, monkeypatch):
+    """ping 应返回空 result（MCP 保活）。"""
+    stdout = StringIO()
+    monkeypatch.setattr(sys, "stdout", stdout)
+    responses = _run([json.dumps({"jsonrpc": "2.0", "id": 1, "method": "ping"})])
+    assert responses == [{"jsonrpc": "2.0", "id": 1, "result": {}}]
+
+
+def test_server_parse_error_returns_32700(server_env, monkeypatch):
+    """JSON 解析失败应回 -32700，而不是静默丢弃导致客户端挂起。"""
+    stdout = StringIO()
+    monkeypatch.setattr(sys, "stdout", stdout)
+    responses = _run(["{bad json"])
+    assert len(responses) == 1
+    assert responses[0]["id"] is None
+    assert responses[0]["error"]["code"] == -32700
+
+
+def test_server_invalid_request_returns_32600(server_env, monkeypatch):
+    """顶层非 dict（字符串/数字/数组混合）应回 -32600，而不是崩溃。"""
+    stdout = StringIO()
+    monkeypatch.setattr(sys, "stdout", stdout)
+    responses = _run(['"just a string"'])
+    assert len(responses) == 1
+    assert responses[0]["error"]["code"] == -32600
+
+
+def test_server_batch_request(server_env, monkeypatch):
+    """JSON-RPC batch：请求+通知混合，只回有 id 的请求（数组形式）。"""
+    stdout = StringIO()
+    monkeypatch.setattr(sys, "stdout", stdout)
+    batch = [
+        {"jsonrpc": "2.0", "id": 2, "method": "ping"},
+        {"jsonrpc": "2.0", "method": "notifications/initialized"},
+    ]
+    responses = _run([json.dumps(batch)])
+    assert len(responses) == 1
+    assert responses[0][0]["id"] == 2
+    assert responses[0][0]["result"] == {}
+
+
+def test_server_idless_request_treated_as_notification(server_env, monkeypatch):
+    """无 id 的请求视为通知，不应返回响应。"""
+    stdout = StringIO()
+    monkeypatch.setattr(sys, "stdout", stdout)
+    responses = _run([json.dumps({"jsonrpc": "2.0", "method": "tools/list"})])
+    assert responses == []

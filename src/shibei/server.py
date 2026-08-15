@@ -364,93 +364,136 @@ TOOLS = {
 }
 
 
+def _handle_request(brain, req) -> 'dict | None':
+    """处理单个 JSON-RPC 请求。返回响应 dict；通知（无 id）返回 None。"""
+    if not isinstance(req, dict):
+        return {
+            "jsonrpc": "2.0",
+            "id": None,
+            "error": {"code": -32600, "message": "Invalid Request: expected object"},
+        }
+
+    method = req.get("method", "")
+    req_id = req.get("id")
+
+    # JSON-RPC 2.0：无 id 视为通知，不应返回响应
+    if req_id is None:
+        return None
+
+    if method == "ping":
+        # MCP 必需方法：保活探测
+        return {"jsonrpc": "2.0", "id": req_id, "result": {}}
+    if method == "initialize":
+        return {
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "result": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {"tools": {}},
+                "serverInfo": {"name": "shibei", "version": "0.1.0"},
+            },
+        }
+    if method == "notifications/initialized":
+        return None
+    if method == "tools/list":
+        tools_list = [
+            {
+                "name": name,
+                "description": info["description"],
+                "inputSchema": info["inputSchema"],
+            }
+            for name, info in TOOLS.items()
+        ]
+        return {
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "result": {"tools": tools_list},
+        }
+    if method == "tools/call":
+        params = req.get("params", {})
+        tool_name = params.get("name", "")
+        arguments = params.get("arguments", {})
+
+        if tool_name not in TOOLS:
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "error": {
+                    "code": -32601,
+                    "message": f"Tool not found: {tool_name}",
+                },
+            }
+        try:
+            result = TOOLS[tool_name]["handler"](brain, arguments)
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": json.dumps(
+                                result, ensure_ascii=False, indent=2
+                            ),
+                        }
+                    ]
+                },
+            }
+        except Exception as e:
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {
+                    "content": [{"type": "text", "text": f"Error: {e}"}]
+                },
+                "isError": True,
+            }
+
+    return {
+        "jsonrpc": "2.0",
+        "id": req_id,
+        "error": {"code": -32601, "message": f"Unknown method: {method}"},
+    }
+
+
+def _write_response(resp: dict):
+    sys.stdout.write(json.dumps(resp, ensure_ascii=False) + "\n")
+    sys.stdout.flush()
+
+
 def main():
     brain = _init_brain()
+
+    if os.environ.get("SHIBEI_MCP_DEBUG"):
+        import logging
+        logging.basicConfig(level=logging.DEBUG)
 
     for line in sys.stdin:
         try:
             req = json.loads(line.strip())
-        except json.JSONDecodeError:
-            continue
-
-        method = req.get("method", "")
-        req_id = req.get("id")
-
-        if method == "initialize":
-            resp = {
+        except json.JSONDecodeError as e:
+            # 解析失败必须回 -32700，否则客户端会一直挂起等待
+            _write_response({
                 "jsonrpc": "2.0",
-                "id": req_id,
-                "result": {
-                    "protocolVersion": "2024-11-05",
-                    "capabilities": {"tools": {}},
-                    "serverInfo": {"name": "shibei", "version": "0.1.0"},
-                },
-            }
-        elif method == "notifications/initialized":
+                "id": None,
+                "error": {"code": -32700, "message": f"Parse error: {e}"},
+            })
             continue
-        elif method == "tools/list":
-            tools_list = [
-                {
-                    "name": name,
-                    "description": info["description"],
-                    "inputSchema": info["inputSchema"],
-                }
-                for name, info in TOOLS.items()
+
+        if isinstance(req, list):
+            # JSON-RPC 2.0 batch：逐个处理，只回有响应的部分
+            resps = [
+                r for r in (_handle_request(brain, item) for item in req)
+                if r is not None
             ]
-            resp = {
-                "jsonrpc": "2.0",
-                "id": req_id,
-                "result": {"tools": tools_list},
-            }
-        elif method == "tools/call":
-            params = req.get("params", {})
-            tool_name = params.get("name", "")
-            arguments = params.get("arguments", {})
+            if resps:
+                sys.stdout.write(json.dumps(resps, ensure_ascii=False) + "\n")
+                sys.stdout.flush()
+            continue
 
-            if tool_name not in TOOLS:
-                resp = {
-                    "jsonrpc": "2.0",
-                    "id": req_id,
-                    "error": {
-                        "code": -32601,
-                        "message": f"Tool not found: {tool_name}",
-                    },
-                }
-            else:
-                try:
-                    result = TOOLS[tool_name]["handler"](brain, arguments)
-                    resp = {
-                        "jsonrpc": "2.0",
-                        "id": req_id,
-                        "result": {
-                            "content": [
-                                {
-                                    "type": "text",
-                                    "text": json.dumps(
-                                        result, ensure_ascii=False, indent=2
-                                    ),
-                                }
-                            ]
-                        },
-                    }
-                except Exception as e:
-                    resp = {
-                        "jsonrpc": "2.0",
-                        "id": req_id,
-                        "result": {
-                            "content": [{"type": "text", "text": f"Error: {e}"}]
-                        },
-                        "isError": True,
-                    }
-        else:
-            resp = {
-                "jsonrpc": "2.0",
-                "id": req_id,
-                "error": {"code": -32601, "message": f"Unknown method: {method}"},
-            }
-
-        sys.stdout.write(json.dumps(resp, ensure_ascii=False) + "\n")
-        sys.stdout.flush()
+        resp = _handle_request(brain, req)
+        if resp is not None:
+            _write_response(resp)
 
 
 if __name__ == "__main__":

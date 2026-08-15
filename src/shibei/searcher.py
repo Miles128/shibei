@@ -130,7 +130,10 @@ class Searcher:
         if include_memories:
             result["memories"] = self._search_memories(query, limit)
 
-        result["related"] = self._find_related(result.get("results", []))
+        if self.cfg.related.enabled:
+            result["related"] = self._find_related(result.get("results", []))
+        else:
+            result["related"] = []
         return result
 
     def _search_memories(self, query, limit):
@@ -152,10 +155,18 @@ class Searcher:
             for r in rows
         ]
 
-    def _find_related(self, results: list[dict], top_k: int = 3, limit: int = 3) -> list[dict]:
+    def _find_related(
+        self,
+        results: list[dict],
+        top_k: int | None = None,
+        limit: int | None = None,
+    ) -> list[dict]:
         """为前 top_k 个结果查找相关文档。"""
         if not results:
             return []
+
+        top_k = self.cfg.related.top_k if top_k is None else top_k
+        limit = self.cfg.related.limit if limit is None else limit
 
         from .related import RelatedFinder
 

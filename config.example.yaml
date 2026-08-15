@@ -34,13 +34,14 @@ tagging:
     - pattern: ".*"
       tag: personal-note           # 兜底
 
-# === 查询扩展（零向量库） ===
-# 通过外部同义词表 + 编辑距离模糊匹配，提升 BM25 召回。
-# 同义词表示例：
-#   {
-#     "手机": ["移动电话", "手提电话"],
-#     "AI": ["人工智能", "大模型"]
-#   }
+# === 相关文档发现 ===
+# 默认关闭以加速 shibei_context / shibei_search 召回。
+# 宽标签（如 interview、personal-note）会导致标签 fanout 大、耗时上升。
+related:
+  enabled: false
+  top_k: 1                       # 启用时只对前 N 条命中算关联
+  limit: 3                       # 最多返回几条 related
+
 # === 查询改写（口语 -> BM25 友好） ===
 # 在 expander 之前执行，按顺序做关键词替换。
 rewriter:

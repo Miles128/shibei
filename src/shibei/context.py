@@ -155,12 +155,21 @@ def build_context(
             item["parent_text"] = parent[:400] + "…"
         results.append(item)
 
+    # 记忆同样截断，避免长记忆撑爆 context pack
+    memories = []
+    for m in search_result.get("memories", []):
+        item = dict(m)
+        text = item.get("text") or ""
+        if len(text) > 240:
+            item["text"] = text[:240] + "…"
+        memories.append(item)
+
     pack = {
         "message": message,
         "query_used": search_result.get("query_used", query),
         "total": search_result.get("total", len(results)),
         "results": results,
-        "memories": search_result.get("memories", []),
+        "memories": memories,
         "related": search_result.get("related", []),
     }
     if "rewrite" in search_result:

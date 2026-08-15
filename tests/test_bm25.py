@@ -4,24 +4,28 @@ import tempfile
 from pathlib import Path
 
 from shibei.bm25 import BM25Index
-from shibei.tokenizer import tokenize_text, tokenize_query
+from shibei.tokenizer import tokenize_text, tokenize_query, jieba_available
 
 
 def test_tokenize_chinese():
-    """中文 bigram + 单字分词"""
+    """中文分词"""
     tokens = tokenize_text("你好世界").split()
     assert "你好" in tokens
-    assert "好世" in tokens
     assert "世界" in tokens
-    assert "你" in tokens
+    if not jieba_available():
+        assert "好世" in tokens
+        assert "你" in tokens
 
 
 def test_tokenize_mixed():
-    """中英混合分词 — 英文作为完整 token，中文 bigram"""
+    """中英混合分词 — 英文作为完整 token"""
     tokens = tokenize_text("AI大模型很强大").split()
     assert "AI" in tokens
-    assert "大模" in tokens
-    assert "模型" in tokens
+    if jieba_available():
+        assert "模型" in tokens
+    else:
+        assert "大模" in tokens
+        assert "模型" in tokens
 
 
 def test_tokenize_query():
@@ -156,3 +160,62 @@ def test_bm25_summary_recall():
         assert results[0]["source"] == "src/a.md"
         # 返回给 LLM 的仍然是原文
         assert "深度学习" in results[0]["text"]
+
+
+# ---- 回归测试：score 方向 / 噪音查询 / 标签边界 / 事务化合并 ----
+
+def _index(tmp_path, items):
+    bm = BM25Index(str(tmp_path / "fts5.db"))
+    bm.add_batch(items)
+    return bm
+
+
+def test_score_higher_means_more_relevant(tmp_path):
+    """FTS5 rank 越负越相关：score 应单调递增于相关度（修复 bm25.py score 反转）。"""
+    bm = _index(tmp_path, [
+        ("a.md", "a.md", "ai", "Redis 缓存是面试高频题，缓存穿透与雪崩", "", ""),
+        ("b.md", "b.md", "ai", "Redis 分布式锁实现", "", ""),
+        ("c.md", "c.md", "finance", "银行风控模型验证", "", ""),
+    ])
+    results = bm.search("Redis 缓存")
+    assert len(results) >= 2
+    scores = [r["score"] for r in results]
+    assert scores == sorted(scores, reverse=True), "score 未按相关度降序"
+    assert results[0]["score"] > results[-1]["score"]
+
+
+def test_noise_query_returns_empty(tmp_path):
+    """纯噪音查询（如 '###'）分词后为空，应短路返回空列表而非 FTS5 语法错误。"""
+    bm = _index(tmp_path, [("a.md", "a.md", "ai", "Redis 缓存", "", "")])
+    assert tokenize_query("###") == ""
+    assert bm.search("###") == []
+    assert bm.search("---") == []
+
+
+def test_tag_filter_exact_boundary(tmp_path):
+    """tag 过滤应精确匹配（',ai,' 不命中 ',daily,'），避免 LIKE 子串误伤。"""
+    bm = _index(tmp_path, [
+        ("a.md", "a.md", "ai", "大模型相关内容", "", ""),
+        ("d.md", "d.md", "daily", "今日日记", "", ""),
+    ])
+    hits = bm.search("内容", tag="ai")
+    assert [h["_rowid"] for h in hits] == [1]
+    hits = bm.search("日记", tag="daily")
+    assert [h["_rowid"] for h in hits] == [2]
+
+
+def test_replace_by_rowids_atomic(tmp_path):
+    """replace_by_rowids 在同一事务内删除+插入，结果数 = 原数 - 删 + 插。"""
+    bm = _index(tmp_path, [
+        ("a.md", "a.md", "ai", "第一段内容", "", ""),
+        ("b.md", "b.md", "ai", "第二段内容", "", ""),
+    ])
+    bm.replace_by_rowids([1, 2], [
+        ("__consolidated__/t/1#a", "__consolidated__/t/1#a", "consolidated",
+         "合并后的完整内容", "", "", ""),
+    ])
+    assert bm.count() == 1
+    assert bm.existing_rowids([1, 2]) == set()
+    # 合并内容可被检索到
+    hits = bm.search("合并后的完整")
+    assert len(hits) == 1

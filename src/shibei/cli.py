@@ -626,10 +626,8 @@ def main():
                          help="禁用整理（记忆清理/候选识别）")
     p_dream.add_argument("--format", choices=["brief", "full"], default="brief",
                          help="输出格式：brief=摘要（默认），full=含跨文档连接与标签模式")
-    p_dream.add_argument("--persist", action="store_true", default=True,
-                         help="持久化结果到 db_path/dream_result.json（默认开启）")
     p_dream.add_argument("--no-persist", action="store_true",
-                         help="不持久化结果")
+                         help="不持久化结果到 db_path/dream_result.json（默认持久化）")
 
     # profile
     p_profile = sub.add_parser("profile", help="管理配置 profile")
