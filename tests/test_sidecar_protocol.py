@@ -92,6 +92,24 @@ def test_remember_then_context_matches_kernel(sidecar_server):
     assert pack["total"] == direct["total"]
 
 
+def test_persona_after_remember(sidecar_server):
+    info, _ = sidecar_server
+    _http(
+        info["base_url"],
+        info["token"],
+        "POST",
+        "/v1/remember",
+        {"fact": "用户住在上海", "category": "user"},
+    )
+    status, persona = _http(info["base_url"], info["token"], "GET", "/v1/persona")
+    assert status == 200
+    assert persona["total"] >= 1
+    facts = []
+    for items in persona["categories"].values():
+        facts.extend(i["fact"] if isinstance(i, dict) else i for i in items)
+    assert any("上海" in f for f in facts)
+
+
 def test_import_then_search(sidecar_server):
     info, _ = sidecar_server
     _, imported = _http(info["base_url"], info["token"], "POST", "/v1/import", {})

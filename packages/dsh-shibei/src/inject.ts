@@ -9,10 +9,31 @@ export type ContextMemory = {
   text?: string
 }
 
+export type RememberHint = {
+  should?: boolean
+  fact?: string
+  reason?: string
+}
+
 export type ContextPack = {
   query_used?: string
   results?: ContextHit[]
   memories?: ContextMemory[]
+  suggest_remember?: RememberHint
+}
+
+export type PersonaFact = { fact?: string }
+
+export type PersonaPack = {
+  total?: number
+  categories?: Record<string, PersonaFact[] | string[]>
+}
+
+export type MemoryRow = {
+  fact?: string
+  text?: string
+  category?: string
+  id?: string
 }
 
 const SKIP_RE = /我|笔记|记得|之前|偏好/
@@ -23,6 +44,14 @@ export function shouldSkipInstruction(message: string, enabled: boolean): boolea
   if (text.length >= 16) return false
   if (SKIP_RE.test(text)) return false
   return text.length < 8 || /^(改|跑|打开|关闭|重启)/.test(text)
+}
+
+function clipUtf8(md: string, maxBytes: number): string {
+  const encoder = new TextEncoder()
+  while (encoder.encode(md).length > maxBytes && md.length > 32) {
+    md = md.slice(0, Math.max(32, md.length - 64)) + "…"
+  }
+  return md
 }
 
 export function formatContextPack(pack: ContextPack, maxBytes: number): string {
@@ -47,10 +76,99 @@ export function formatContextPack(pack: ContextPack, maxBytes: number): string {
       lines.push(`- ${src}: ${text}`)
     }
   }
-  let md = lines.join("\n")
-  const encoder = new TextEncoder()
-  while (encoder.encode(md).length > maxBytes && md.length > 32) {
-    md = md.slice(0, Math.max(32, md.length - 64)) + "…"
+  return clipUtf8(lines.join("\n"), maxBytes)
+}
+
+export function formatPersona(pack: PersonaPack, maxBytes = 2048): string {
+  const total = pack.total || 0
+  if (!total) return "[拾贝画像]\n暂无长期记忆。"
+  const lines = ["[拾贝画像]"]
+  for (const [cat, facts] of Object.entries(pack.categories || {})) {
+    lines.push(`${cat}:`)
+    for (const item of facts.slice(0, 8)) {
+      const fact = typeof item === "string" ? item : item.fact || ""
+      if (fact) lines.push(`- ${fact}`)
+    }
   }
-  return md
+  return clipUtf8(lines.join("\n"), maxBytes)
+}
+
+export function formatRememberHint(hint: RememberHint): string {
+  if (!hint?.should) return ""
+  const fact = (hint.fact || "").trim()
+  return [
+    "[拾贝写记忆提示]",
+    "本轮披露了可长期保存的事实。请调用 shibei_remember，不要只口头答应。",
+    fact ? `建议写入: ${fact}` : "",
+    hint.reason ? `原因: ${hint.reason}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n")
+}
+
+export function parseHostLlmTerms(raw: string, maxTerms = 8): string {
+  const terms = (raw || "")
+    .split(/[\s,，、]+/)
+    .map((t) => t.replace(/^[0-9]+[.)、．]\s*/, "").replace(/^[-*•]\s*/, "").trim())
+    .filter((t) => t && t.length < 40)
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const t of terms) {
+    const key = t.toLowerCase()
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push(t)
+    if (out.length >= maxTerms) break
+  }
+  return out.join(" ")
+}
+
+export async function handleShibeiCommand(
+  rawInput: string,
+  deps: {
+    search: (query: string) => Promise<ContextPack>
+    persona: () => Promise<PersonaPack>
+  },
+): Promise<string> {
+  const q = rawInput.trim()
+  if (!q) {
+    const persona = await deps.persona()
+    return `${formatPersona(persona)}\n\n用法: /shibei <检索词>`
+  }
+  const pack = await deps.search(q)
+  return formatContextPack(pack, 4096)
+}
+
+export async function handleMemoryCommand(
+  rawInput: string,
+  deps: {
+    list: () => Promise<MemoryRow[]>
+    remember: (fact: string) => Promise<MemoryRow>
+    search: (query: string) => Promise<MemoryRow[]>
+  },
+): Promise<string> {
+  const q = rawInput.trim()
+  if (!q) {
+    const rows = await deps.list()
+    if (!rows.length) return "[拾贝记忆]\n暂无记忆。"
+    const lines = ["[拾贝记忆]"]
+    for (const row of rows.slice(0, 20)) {
+      const text = row.fact || row.text || ""
+      const cat = row.category ? `[${row.category}] ` : ""
+      lines.push(`- ${cat}${text}`)
+    }
+    return lines.join("\n")
+  }
+  const rememberMatch = q.match(/^(remember|add|记)\s+(.+)$/i)
+  if (rememberMatch) {
+    const row = await deps.remember(rememberMatch[2].trim())
+    return `已写入记忆: ${row.fact || rememberMatch[2].trim()}`
+  }
+  const rows = await deps.search(q)
+  if (!rows.length) return `[拾贝记忆]\n未找到与「${q}」相关的记忆。`
+  const lines = ["[拾贝记忆]"]
+  for (const row of rows.slice(0, 10)) {
+    lines.push(`- ${row.fact || row.text || ""}`)
+  }
+  return lines.join("\n")
 }

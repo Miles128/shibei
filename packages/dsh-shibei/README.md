@@ -15,12 +15,18 @@
         maxInjectedBytes: 4096
         injectLimit: 5
         skipInstruction: true
+        rewrite: rules                 # 或 host-llm
 ```
 
 需要本机已安装拾贝（`PYTHONPATH` 能 `import shibei`），插件启动时会 `ensure` sidecar。
 
 ## 行为
 
-- 每个 step 自动 `POST /v1/context`，把 compact pack inject 进模型可见上下文
+- 会话开始：`agent/session-start` 注入短画像
+- 每个 step：`agent/pre-step` 自动 `POST /v1/context`，inject compact pack
+- 回合结束：若 `suggest_remember.should`，inject 写记忆提示（不自动写入）
 - 工具：`shibei_remember`、`shibei_search`
+- 人机命令：`/shibei [检索词]`、`/memory`、`/memory remember <事实>`
 - 长期记忆仍在 `~/.shibei` SQLite，不进 DSH session log
+
+`rewrite: host-llm` 时，pre-step 用宿主 LLM 抽 5–8 个词再检索（仍在同一步）。默认 `rules`。
