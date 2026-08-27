@@ -17,7 +17,7 @@ class FakeBrain:
     def __init__(self, config_path: str):
         self.config = load_config(config_path)
 
-    def search(self, query: str, limit: int = 5, tag: str | None = None):
+    def search(self, query: str, limit: int = 5, tag: str | None = None, **kwargs):
         self.calls.append(("search", {"query": query, "limit": limit, "tag": tag}))
         return {
             "results": [
@@ -160,7 +160,7 @@ def config_path(tmp_path: Path, monkeypatch):
     cfg = tmp_path / "config.yaml"
     cfg.write_text(f"storage:\n  path: {tmp_path / 'db'}\n", encoding="utf-8")
 
-    monkeypatch.setattr(cli, "Shibei", FakeBrain)
+    monkeypatch.setattr(cli, "ShibeiClient", FakeBrain)
     monkeypatch.setattr(
         cli, "resolve_config_path", lambda config, profile: str(cfg)
     )

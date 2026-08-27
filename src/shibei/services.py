@@ -19,6 +19,7 @@ class Shibei:
 
     def __init__(self, config_path: str = "config.yaml"):
         self.config = load_config(config_path)
+        self.config.db_path_expanded.mkdir(parents=True, exist_ok=True)
 
     def search(
         self,
@@ -26,9 +27,38 @@ class Shibei:
         limit: int = 5,
         tag: 'str | None' = None,
         include_memories: bool = True,
+        rewrite: 'bool | None' = None,
+        llm_rewrite: 'bool | None' = None,
+        expand: 'bool | None' = None,
+        fuzzy: 'bool | None' = None,
+        synonyms: 'str | None' = None,
     ) -> dict:
+        from copy import deepcopy
+
         from .searcher import Searcher
-        return Searcher(self.config).search(
+
+        cfg = self.config
+        if any(
+            x is not None
+            for x in (rewrite, llm_rewrite, expand, fuzzy, synonyms)
+        ):
+            cfg = deepcopy(self.config)
+            if rewrite:
+                cfg.rewriter.enabled = True
+            if llm_rewrite:
+                cfg.rewriter.enabled = True
+                cfg.rewriter.use_llm = True
+            if expand is True:
+                cfg.expander.enabled = True
+            elif expand is False:
+                cfg.expander.enabled = False
+            if synonyms:
+                cfg.expander.synonyms_path = synonyms
+                cfg.expander.enabled = True
+            if fuzzy:
+                cfg.expander.fuzzy = True
+                cfg.expander.enabled = True
+        return Searcher(cfg).search(
             query, limit, tag, include_memories=include_memories
         )
 

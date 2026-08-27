@@ -28,13 +28,12 @@ import os
 import uuid
 from datetime import datetime
 
-from .config import load_config
-from .services import Shibei
+from .client import ShibeiClient
 
 
 def _init_brain():
     config_path = os.environ.get("SHIBEI_CONFIG", "config.yaml")
-    return Shibei(config_path)
+    return ShibeiClient(config_path)
 
 
 def _handle_search(brain, args):

@@ -14,13 +14,19 @@ shibei search "关键词"           # 搜索
 shibei serve                    # 启动 MCP server
 ```
 
-## 三层接口
+## 三层接口（都走 sidecar）
+
+所有外部入口共享一条 loopback HTTP：CLI / MCP / DeepSeek Harness 插件都不直连 SQLite。
 
 | 接口 | 命令 | 谁用 |
 |------|------|------|
+| Sidecar | `shibei sidecar --daemon` | 常驻内核 |
 | CLI | `shibei context/search/import/list/remember` | 人 |
-| MCP | `shibei serve` | AI Agent |
-| Python | `from shibei import Shibei` | 开发者 |
+| MCP | `shibei serve` | Cursor / Claude 等 |
+| DSH 插件 | `packages/dsh-shibei` | DeepSeek Harness |
+| Python | `from shibei.client import ShibeiClient` | 开发者（进程外） |
+
+`from shibei import Shibei` 仍是内核类，仅 sidecar 内部与单测使用。
 
 ## 核心特性
 
@@ -282,24 +288,27 @@ expander:
 ## 架构
 
 ```
-CLI (shibei)
-  └── Shibei (服务层)
-        ├── Context ──→ 答前抽词 + 搜索管线 → context pack
-        ├── Importer ──→ BM25 (FTS5)
-        ├── Searcher ──→ 规则/LLM 改写 → 扩展 → BM25 + 相关推荐
-        ├── Expander ──→ 同义词表 + 模糊匹配
-        ├── Summarizer ──→ LLM 一句话摘要（可选）
-        ├── MemoryStore ──→ SQLite (BM25 召回) + 版本链
-        ├── Manifest ──→ 文件 hash 追踪 (增量导入)
-        ├── Profile ──→ 多场景配置切换
-        ├── Dreamer ──→ 跨文档洞察 + 整理建议（skill 形式）
-        └── Server ──→ MCP JSON-RPC (Agent 接入)
+CLI / MCP / dsh-shibei
+        │
+        ▼
+ShibeiClient  ──►  sidecar (127.0.0.1 HTTP /v1)
+                        │
+                        ▼
+                   Shibei 内核
+                        │
+          ┌─────────────┼──────────────┐
+          ▼             ▼              ▼
+       Context       Searcher      MemoryStore
+          │             │              │
+          └─────────────┴──────► SQLite FTS5
 ```
 
 ## 测试
 
 ```bash
 PYTHONPATH=src pytest tests/ -v
+# DSH 插件渲染单测
+(cd packages/dsh-shibei && node --experimental-strip-types --test src/inject.test.ts)
 ```
 
 测试覆盖：配置加载、标签推断、分块逻辑、BM25 索引、记忆召回、轻量关联、增量追踪、Profile 管理、Dreaming 洞察与整理建议。
