@@ -157,7 +157,10 @@ def _run(stdin_lines: list[str]) -> list[dict]:
     """向 server.main 送入请求并解析返回的 JSON-RPC 响应。"""
     sys.stdin = StringIO("\n".join(stdin_lines) + "\n")
     server.main()
-    raw = sys.stdout.getvalue()
+    stdout = sys.stdout
+    if not isinstance(stdout, StringIO):
+        raise TypeError("expected StringIO stdout in tests")
+    raw = stdout.getvalue()
     return [json.loads(line) for line in raw.strip().split("\n") if line.strip()]
 
 

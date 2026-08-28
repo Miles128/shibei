@@ -247,11 +247,16 @@ def start_server(
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
     bound_host, bound_port = httpd.server_address[:2]
+    host_str = (
+        bound_host.decode()
+        if isinstance(bound_host, (bytes, bytearray))
+        else str(bound_host)
+    )
     info = {
-        "host": bound_host,
+        "host": host_str,
         "port": bound_port,
         "token": state.token,
-        "base_url": f"http://{bound_host}:{bound_port}",
+        "base_url": f"http://{host_str}:{bound_port}",
         "config_path": state.config_path,
         "pid": os.getpid(),
         "started_at": state.started_at,

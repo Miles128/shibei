@@ -27,6 +27,7 @@ import sys
 import os
 import uuid
 from datetime import datetime
+from typing import Any
 
 from .client import ShibeiClient
 
@@ -131,7 +132,7 @@ def _handle_update_memory(brain, args):
     )
 
 
-TOOLS = {
+TOOLS: dict[str, dict[str, Any]] = {
     "shibei_context": {
         "handler": _handle_context,
         "description": (
@@ -411,7 +412,7 @@ TOOLS = {
 }
 
 
-def _compact_result(result, keep: int) -> dict:
+def _compact_result(result: Any, keep: int) -> Any:
     """递归截断结果中的长文本字段，生成紧凑版（用于上下文卸载后的响应）。"""
     if isinstance(result, dict):
         return {k: _compact_result(v, keep) for k, v in result.items()}

@@ -136,6 +136,8 @@ class BM25Index:
                     (source, file_path, tags, content, parent_text, parent_id, summary),
                 )
                 rowid = cur.lastrowid
+                if rowid is None:
+                    raise sqlite3.IntegrityError("INSERT 未返回 rowid")
                 # FTS5 content='' mode: rowid must match
                 conn.execute(
                     f"INSERT INTO {FTS_TABLE} (rowid, content_tokens, summary_tokens) VALUES (?, ?, ?)",

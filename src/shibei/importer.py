@@ -109,15 +109,15 @@ class Importer:
         if progress is not None:
             progress(0, len(changed))
 
-        for idx, (f, result) in enumerate(parsed_results, start=1):
-            if isinstance(result, Exception):
-                warnings.append(f"文件解析失败: {f} ({result})")
-                logger.warning("文件解析失败: %s (%s)", f, result)
+        for idx, (f, parsed) in enumerate(parsed_results, start=1):
+            if isinstance(parsed, Exception):
+                warnings.append(f"文件解析失败: {f} ({parsed})")
+                logger.warning("文件解析失败: %s (%s)", f, parsed)
                 if progress is not None:
                     progress(idx, len(changed))
                 continue
 
-            content = result
+            content = parsed
             tags = self.tagger.infer(f, content)
             slug = str(f)
             chunks = chunk_text(

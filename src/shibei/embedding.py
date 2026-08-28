@@ -92,11 +92,13 @@ class Embedder:
     def _embed_local(self, texts: list[str]) -> list[list[float]]:
         from fastembed import TextEmbedding
 
-        if self._local_model is None:
-            self._local_model = TextEmbedding(model_name=self.model)
+        model = self._local_model
+        if model is None:
+            model = TextEmbedding(model_name=self.model)
+            self._local_model = model
         vectors = []
         for batch in _batches(texts, self.batch_size):
-            for v in self._local_model.embed(batch):
+            for v in model.embed(batch):
                 vectors.append([float(x) for x in v])
         return vectors
 
