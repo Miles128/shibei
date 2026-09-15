@@ -1,6 +1,6 @@
 {
   "name": "@shibei/dsh-plugin",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "拾贝 DeepSeek Harness 插件：pre-step 注入 + remember/search，经 sidecar /v1",
   "type": "module",
   "main": "./src/index.ts",

@@ -1,6 +1,7 @@
 import type { Context } from "@deepseek-ai/cordis"
 import { ensureSidecar, ShibeiHttpClient } from "./client.ts"
 import {
+  formatAutoMemoryNotice,
   formatContextPack,
   formatPersona,
   formatRememberHint,
@@ -8,6 +9,7 @@ import {
   handleShibeiCommand,
   parseHostLlmTerms,
   shouldSkipInstruction,
+  type AutoMemoryRow,
   type ContextPack,
   type MemoryRow,
   type PersonaPack,
@@ -23,6 +25,10 @@ type PluginConfig = {
   injectLimit?: number
   skipInstruction?: boolean
   rewrite?: "rules" | "host-llm"
+  /** turn 结束后调用 /v1/auto-remember 自动抽取写入（仍受拾贝 config.auto_memory.enabled 门控） */
+  autoRemember?: boolean
+  /** 自动写入成功后向 agent 注入一条简短通知，防止下一轮重复写入 */
+  autoNotify?: boolean
 }
 
 type AgentHandle = { inject?: (msg: unknown) => void }
@@ -93,6 +99,8 @@ export function apply(ctx: Context) {
   const injectLimit = cfg.injectLimit ?? 5
   const skipInstruction = cfg.skipInstruction !== false
   const rewrite = cfg.rewrite || "rules"
+  const autoRememberOn = cfg.autoRemember !== false
+  const autoNotify = cfg.autoNotify !== false
 
   let client: ShibeiHttpClient | undefined
   try {
@@ -102,6 +110,7 @@ export function apply(ctx: Context) {
   }
 
   let lastHint: RememberHint | null = null
+  let lastUserText = ""
 
   ctx.on("agent/session-start", async (payload: { agent?: AgentHandle }) => {
     if (!client) return
@@ -119,6 +128,7 @@ export function apply(ctx: Context) {
       try {
         const text = extractUserText(input)
         if (text && !shouldSkipInstruction(text, skipInstruction)) {
+          lastUserText = text
           let query: string | undefined
           if (rewrite === "host-llm") {
             query = await hostLlmQuery(ctx, text)
@@ -142,6 +152,24 @@ export function apply(ctx: Context) {
   ctx.on("agent/turn-stopping", async (payload: { agent?: AgentHandle }) => {
     const hint = lastHint
     lastHint = null
+    const userText = lastUserText
+    lastUserText = ""
+
+    // 自动记忆闭环：turn 结束后用拾贝 /v1/auto-remember 抽取写入。
+    // 真正开关在拾贝 config.auto_memory.enabled；未启用时返回空列表，回退到手动提示。
+    if (client && autoRememberOn && userText) {
+      try {
+        const rows = (await client.autoRemember({ message: userText })) as AutoMemoryRow[]
+        const notice = formatAutoMemoryNotice(rows)
+        if (notice) {
+          if (autoNotify) payload.agent?.inject?.(pluginMessage(notice))
+          return
+        }
+      } catch (err) {
+        console.error("[dsh-shibei] auto-remember skipped:", err)
+      }
+    }
+
     const md = hint ? formatRememberHint(hint) : ""
     if (!md) return
     try {
@@ -184,6 +212,33 @@ export function apply(ctx: Context) {
       execute: async (args: { query: string; limit?: number; tag?: string }) =>
         http.search(args),
     })
+    tools.register({
+      name: "shibei_memories",
+      description: "检索或列出拾贝长期记忆（返回记忆 id，可供 shibei_forget 使用）。",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "为空时列出最近记忆" },
+          limit: { type: "integer" },
+        },
+      },
+      execute: async (args: { query?: string; limit?: number }) =>
+        args.query
+          ? http.searchMemories(args.query, args.limit ?? 10)
+          : http.listMemories(args.limit ?? 20),
+    })
+    tools.register({
+      name: "shibei_forget",
+      description: "删除一条拾贝长期记忆（先经用户确认再调用）。",
+      parameters: {
+        type: "object",
+        properties: {
+          memory_id: { type: "string" },
+        },
+        required: ["memory_id"],
+      },
+      execute: async (args: { memory_id: string }) => http.forgetMemory(args.memory_id),
+    })
   }
 
   const commands = (
@@ -217,6 +272,7 @@ export function apply(ctx: Context) {
           list: async () => (await http.listMemories()) as MemoryRow[],
           remember: async (fact) => (await http.remember({ fact })) as MemoryRow,
           search: async (query) => (await http.searchMemories(query)) as MemoryRow[],
+          forget: async (memoryId) => Boolean(await http.forgetMemory(memoryId)),
         }),
       }),
     })

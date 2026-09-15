@@ -108,4 +108,12 @@ export class ShibeiHttpClient {
   searchMemories(query: string, limit = 10): Promise<unknown> {
     return requestJson(this.info, "POST", "/v1/memories/search", { query, limit })
   }
+
+  autoRemember(body: { message: string }): Promise<unknown> {
+    return requestJson(this.info, "POST", "/v1/auto-remember", body)
+  }
+
+  forgetMemory(memoryId: string): Promise<unknown> {
+    return requestJson(this.info, "POST", "/v1/memories/forget", { memory_id: memoryId })
+  }
 }

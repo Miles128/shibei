@@ -106,8 +106,27 @@ export function formatRememberHint(hint: RememberHint): string {
     .join("\n")
 }
 
-export function parseHostLlmTerms(raw: string, maxTerms = 8): string {
-  const terms = (raw || "")
+export type AutoMemoryRow = {
+  fact?: string
+}
+
+/** 通知 agent 自动记忆已写入哪些事实，避免下一轮重复调用 shibei_remember。 */
+export function formatAutoMemoryNotice(rows: AutoMemoryRow[]): string {
+  const facts: string[] = []
+  for (const row of rows || []) {
+    const fact = (row?.fact || "").trim()
+    if (fact) facts.push(fact)
+  }
+  if (!facts.length) return ""
+  const lines = [
+    "[拾贝自动记忆]",
+    "本轮已自动写入以下长期记忆，无需再调用 shibei_remember 重复写入:",
+    ...facts.slice(0, 5).map((f) => `- ${f}`),
+  ]
+  return clipUtf8(lines.join("\n"), 1024)
+}
+
+export function parseHostLlmTerms(raw: string, maxTerms = 8): string {  const terms = (raw || "")
     .split(/[\s,，、]+/)
     .map((t) => t.replace(/^[0-9]+[.)、．]\s*/, "").replace(/^[-*•]\s*/, "").trim())
     .filter((t) => t && t.length < 40)
@@ -145,6 +164,7 @@ export async function handleMemoryCommand(
     list: () => Promise<MemoryRow[]>
     remember: (fact: string) => Promise<MemoryRow>
     search: (query: string) => Promise<MemoryRow[]>
+    forget?: (memoryId: string) => Promise<boolean>
   },
 ): Promise<string> {
   const q = rawInput.trim()
@@ -155,8 +175,10 @@ export async function handleMemoryCommand(
     for (const row of rows.slice(0, 20)) {
       const text = row.fact || row.text || ""
       const cat = row.category ? `[${row.category}] ` : ""
-      lines.push(`- ${cat}${text}`)
+      const id = row.id ? `#${row.id} ` : ""
+      lines.push(`- ${id}${cat}${text}`)
     }
+    lines.push("forget #<id> 删除对应记忆")
     return lines.join("\n")
   }
   const rememberMatch = q.match(/^(remember|add|记)\s+(.+)$/i)
@@ -164,11 +186,19 @@ export async function handleMemoryCommand(
     const row = await deps.remember(rememberMatch[2].trim())
     return `已写入记忆: ${row.fact || rememberMatch[2].trim()}`
   }
+  const forgetMatch = q.match(/^(forget|delete|删|忘)\s*#?\s*(\S+)$/i)
+  if (forgetMatch) {
+    if (!deps.forget) return "[拾贝记忆]\n当前不支持删除。"
+    const target = forgetMatch[2]
+    const ok = await deps.forget(target)
+    return ok ? `已删除记忆 #${target}` : `未找到记忆 #${target}`
+  }
   const rows = await deps.search(q)
   if (!rows.length) return `[拾贝记忆]\n未找到与「${q}」相关的记忆。`
   const lines = ["[拾贝记忆]"]
   for (const row of rows.slice(0, 10)) {
-    lines.push(`- ${row.fact || row.text || ""}`)
+    const id = row.id ? `#${row.id} ` : ""
+    lines.push(`- ${id}${row.fact || row.text || ""}`)
   }
   return lines.join("\n")
 }

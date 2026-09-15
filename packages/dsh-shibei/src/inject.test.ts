@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  formatAutoMemoryNotice,
   formatContextPack,
   formatPersona,
   formatRememberHint,
@@ -82,6 +83,67 @@ test("handleShibeiCommand searches or shows usage", async () => {
   });
   assert.deepEqual(calls, ["Redis 缓存"]);
   assert.ok(out.includes("布隆过滤器"));
+});
+
+test("formatAutoMemoryNotice lists written facts or stays empty", () => {
+  const md = formatAutoMemoryNotice([
+    { fact: "偏好 Python 而非 Go" },
+    { fact: "" },
+    { fact: "正在找长三角的金融 AI 岗位" },
+  ]);
+  assert.ok(md.includes("[拾贝自动记忆]"));
+  assert.ok(md.includes("shibei_remember"));
+  assert.ok(md.includes("偏好 Python 而非 Go"));
+  assert.ok(md.includes("正在找长三角的金融 AI 岗位"));
+  assert.equal(formatAutoMemoryNotice([]), "");
+  assert.equal(formatAutoMemoryNotice([{ fact: "" }, {}]), "");
+
+  const capped = formatAutoMemoryNotice(
+    Array.from({ length: 7 }, (_, i) => ({ fact: `事实${i + 1}` })),
+  );
+  assert.ok(capped.includes("事实5"));
+  assert.ok(!capped.includes("事实6")); // 超过 5 条不注入
+});
+
+test("handleMemoryCommand forgets by id when supported", async () => {
+  const forgotten: string[] = [];
+  const out = await handleMemoryCommand("forget #12", {
+    list: async () => [],
+    remember: async (fact) => ({ fact }),
+    search: async () => [],
+    forget: async (id) => {
+      forgotten.push(id);
+      return true;
+    },
+  });
+  assert.deepEqual(forgotten, ["12"]);
+  assert.ok(out.includes("#12"));
+
+  const missing = await handleMemoryCommand("forget 99", {
+    list: async () => [],
+    remember: async (fact) => ({ fact }),
+    search: async () => [],
+    forget: async () => false,
+  });
+  assert.ok(missing.includes("未找到"));
+
+  const noSupport = await handleMemoryCommand("forget 12", {
+    list: async () => [],
+    remember: async (fact) => ({ fact }),
+    search: async () => [],
+  });
+  assert.ok(noSupport.includes("不支持"));
+});
+
+test("handleMemoryCommand list shows ids and forget hint", async () => {
+  const out = await handleMemoryCommand("", {
+    list: async () => [{ id: "7", category: "user", fact: "喜欢茶" }],
+    remember: async (fact) => ({ fact }),
+    search: async () => [],
+  });
+  assert.ok(out.includes("#7"));
+  assert.ok(out.includes("forget"));
+  assert.ok(out.includes("喜欢茶"));
 });
 
 test("handleMemoryCommand lists, remembers, or searches", async () => {
