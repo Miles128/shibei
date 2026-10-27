@@ -87,6 +87,7 @@ class LLMConfig:
     """
 
     enabled: bool = False                       # 是否启用 LLM 摘要
+    preset: str = "custom"                      # deepseek | openai | ollama | custom
     base_url: str = "https://api.openai.com/v1"  # OpenAI-compatible API 地址
     model: str = "gpt-4o-mini"                  # 模型名称
     timeout: float = 30.0                       # HTTP 超时（秒）
@@ -140,6 +141,20 @@ class AutoMemoryConfig:
     source: str = "auto"                        # 来源标记
     max_facts: int = 3                          # 单次最多抽取条数
     min_priority: int = 0                       # 低于该优先级的记忆丢弃（-1 死命令除外）
+
+
+LLM_PRESETS = {
+    "deepseek": ("https://api.deepseek.com/v1", "deepseek-chat"),
+    "openai": ("https://api.openai.com/v1", "gpt-4o-mini"),
+    "ollama": ("http://127.0.0.1:11434/v1", "qwen2.5:7b"),
+}
+
+
+def apply_llm_preset(llm: LLMConfig) -> None:
+    """把 preset 展开成 base_url + model；custom 保持用户显式配置。"""
+    preset = (llm.preset or "custom").strip().lower()
+    if preset in LLM_PRESETS:
+        llm.base_url, llm.model = LLM_PRESETS[preset]
 
 
 DEFAULT_IGNORE_DIRS = (
@@ -262,6 +277,7 @@ def load_config(path: str = "config.yaml") -> Config:
     # LLM 摘要
     if "llm" in raw:
         cfg.llm = LLMConfig(**raw["llm"])
+    apply_llm_preset(cfg.llm)
 
     # 轻量向量混合（可选，默认关）
     if "vector" in raw:

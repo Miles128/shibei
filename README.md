@@ -137,6 +137,8 @@ AI: [人工智能, 大模型, 机器学习]
 
 开启 `auto_memory`（需要 `SHIBEI_LLM_API_KEY`）后，`shibei_context` 会用一次 LLM 调用同时做情境切分与结构化抽取，按优先级过滤后写入，无需宿主手动 `remember`。
 
+LLM 端点用 `llm.preset` 选择：`deepseek` / `openai` / `ollama` / `custom`（custom 用显式 `base_url` + `model`）。默认关闭，不影响纯 BM25 检索。
+
 ```bash
 shibei remember "用户偏好 Python 而不是 Go" --category preference --tags tech
 shibei memories list

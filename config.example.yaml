@@ -78,6 +78,7 @@ expander:
 # 摘要失败时自动降级为空字符串，不会阻断导入。
 llm:
   enabled: false
+  preset: custom                   # deepseek | openai | ollama | custom（custom 用下面的 base_url/model）
   base_url: "https://api.openai.com/v1"
   model: "gpt-4o-mini"
   timeout: 30.0
