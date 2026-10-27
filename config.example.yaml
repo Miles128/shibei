@@ -116,5 +116,15 @@ auto_memory:
   enabled: false
   category: user                   # 自动写入的记忆分类
   source: auto                     # 来源标记
-  max_facts: 3                     # 单次最多抽取条数
+  max_facts: 3
+  dedup: true
+  dedup_candidates: 5                     # 单次最多抽取条数
   min_priority: 0                  # 低于该优先级的记忆丢弃（instruction 的 -1 除外）
+# === Cross-encoder 重排（可选，默认关） ===
+# 初筛 BM25/向量 top_k 后用本地 cross-encoder 重新打分，压掉关键词命中但不相关的噪声。
+# 依赖 fastembed；模型首次使用会从 HuggingFace 下载（国内可设 HF_ENDPOINT=https://hf-mirror.com）。
+rerank:
+  enabled: false
+  model: "BAAI/bge-reranker-base"
+  top_k: 20
+  batch_size: 8

@@ -1,6 +1,6 @@
 """L1 抽取解析测试。"""
 
-from shibei.memory_extract import parse_extraction
+from shibei.memory_extract import classify_heuristic, parse_extraction
 
 
 def test_parse_structured_json():
@@ -56,3 +56,9 @@ def test_parse_clamps_and_skips_short():
 def test_parse_invalid_returns_empty():
     assert parse_extraction("not json") == []
     assert parse_extraction("") == []
+
+
+def test_classify_heuristic():
+    assert classify_heuristic("用户希望以后都用中文回答")["memory_type"] == "instruction"
+    assert classify_heuristic("用户喜欢简洁的回答")["memory_type"] == "persona"
+    assert classify_heuristic("2026 年 8 月完成 dsh 迁移")["memory_type"] == "episodic"

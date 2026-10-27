@@ -135,7 +135,16 @@ AI: [人工智能, 大模型, 机器学习]
 - 版本链：新事实自动替代语义相似旧事实，历史可追溯
 - 与文档库融合搜索：一次搜索同时召回文档 chunk 和相关记忆
 
-开启 `auto_memory`（需要 `SHIBEI_LLM_API_KEY`）后，`shibei_context` 会用一次 LLM 调用同时做情境切分与结构化抽取，按优先级过滤后写入，无需宿主手动 `remember`。
+开启 `auto_memory`（需要 `SHIBEI_LLM_API_KEY`）后，`shibei_context` 会用一次 LLM 调用同时做情境切分与结构化抽取，按优先级过滤后写入，无需宿主手动 `remember`。抽取后会再做一次**在线冲突检测**（候选召回 + 一次批量 LLM 判断 `store/update/skip`），避免重复记忆。
+
+旧库可以补 L1 字段：
+
+```bash
+shibei memories backfill --dry-run   # 预览
+shibei memories backfill             # 启发式回填（零 LLM）
+```
+
+检索可选开 cross-encoder 重排（`rerank.enabled`）：初筛 top_k 后用本地 `BAAI/bge-reranker-base` 重新打分。默认关闭，建议先用评测集验证再开。
 
 LLM 端点用 `llm.preset` 选择：`deepseek` / `openai` / `ollama` / `custom`（custom 用显式 `base_url` + `model`）。默认关闭，不影响纯 BM25 检索。
 

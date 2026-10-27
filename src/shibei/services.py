@@ -210,14 +210,32 @@ class Shibei:
             return []
 
         items = parse_extraction(raw, default_message_id=source_message_ids)
+        items = [
+            item for item in items
+            if item["priority"] >= am.min_priority or item["priority"] == -1
+        ]
         if not items:
             return []
 
         store = MemoryStore(self.config.db_path_expanded)
+
+        # 在线去重：先召回候选，再一次批量判断 store/update/skip
+        decisions = None
+        if am.dedup:
+            from .memory_dedup import decide
+
+            candidates = [
+                store.search(item["content"], limit=am.dedup_candidates)
+                for item in items
+            ]
+            decisions = decide(client, items, candidates)
+
         written: list[dict] = []
-        for item in items:
-            if item["priority"] < am.min_priority and item["priority"] != -1:
+        for index, item in enumerate(items):
+            decision = decisions[index] if decisions else None
+            if decision and decision["action"] == "skip":
                 continue
+            supersedes_id = decision["target_id"] if decision and decision["action"] == "update" else ""
             try:
                 written.append(store.add(
                     fact=item["content"],
@@ -229,6 +247,7 @@ class Shibei:
                     priority=item["priority"],
                     scene_name=item["scene_name"] or scene_name,
                     confidence=item["confidence"],
+                    supersedes_id=supersedes_id,
                 ))
             except ValueError:
                 continue

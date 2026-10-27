@@ -80,6 +80,20 @@ class RelatedConfig:
 
 
 @dataclass
+class RerankConfig:
+    """Cross-encoder 重排（可选，默认关）。
+
+    初筛 BM25/向量召回 top_k 后，用 fastembed 的本地 reranker 重新打分，
+    取前 limit 条。适合压掉「关键词命中但语义不相关」的噪声。
+    """
+
+    enabled: bool = False
+    model: str = "BAAI/bge-reranker-base"
+    top_k: int = 20             # 初筛候选数
+    batch_size: int = 8
+
+
+@dataclass
 class LLMConfig:
     """LLM 摘要生成配置。
 
@@ -141,6 +155,8 @@ class AutoMemoryConfig:
     source: str = "auto"                        # 来源标记
     max_facts: int = 3                          # 单次最多抽取条数
     min_priority: int = 0                       # 低于该优先级的记忆丢弃（-1 死命令除外）
+    dedup: bool = True                          # 在线冲突检测（多一次批量 LLM 调用）
+    dedup_candidates: int = 5                   # 每条新记忆召回的候选数
 
 
 LLM_PRESETS = {
@@ -187,6 +203,7 @@ class Config:
     expander: ExpanderConfig = field(default_factory=ExpanderConfig)
     rewriter: RewriterConfig = field(default_factory=RewriterConfig)
     related: RelatedConfig = field(default_factory=RelatedConfig)
+    rerank: RerankConfig = field(default_factory=RerankConfig)
     llm: LLMConfig = field(default_factory=LLMConfig)
     vector: VectorConfig = field(default_factory=VectorConfig)
     offload: OffloadConfig = field(default_factory=OffloadConfig)
@@ -273,6 +290,10 @@ def load_config(path: str = "config.yaml") -> Config:
     # Related 关联发现
     if "related" in raw:
         cfg.related = RelatedConfig(**raw["related"])
+
+    # 重排（可选）
+    if "rerank" in raw:
+        cfg.rerank = RerankConfig(**raw["rerank"])
 
     # LLM 摘要
     if "llm" in raw:

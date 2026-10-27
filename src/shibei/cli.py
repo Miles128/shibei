@@ -198,6 +198,33 @@ def cmd_memories_forget(args):
         print(f"❌ 未找到记忆 {args.memory_id}")
 
 
+def cmd_memories_backfill(args):
+    """回填旧记忆的 L1 字段（启发式，零 LLM）。"""
+    from .config import load_config
+    from .memory import MemoryStore
+    from .memory_extract import classify_heuristic
+
+    cfg = load_config(args.resolved_config)
+    store = MemoryStore(cfg.db_path_expanded)
+    limit = args.limit or 100000
+    rows = store.list(limit=limit, include_superseded=True)
+    targets = [r for r in rows if not (r.get("memory_type") or "").strip()]
+
+    if args.dry_run:
+        print(f"[dry-run] 待回填 {len(targets)} 条")
+        for r in targets[:10]:
+            kind = classify_heuristic(r["fact"])["memory_type"]
+            print(f"  {r['id'][:8]} → {kind}: {r['fact'][:50]}")
+        return
+
+    updated = 0
+    for row in targets:
+        fields = classify_heuristic(row["fact"])
+        if store.update_l1(row["id"], **fields):
+            updated += 1
+    print(f"✅ 回填 {updated} 条记忆的 L1 字段（persona/episodic/instruction）")
+
+
 def cmd_persona(args):
     """轻量画像：按类别聚合长期记忆（零 LLM）"""
     brain = ShibeiClient(args.resolved_config)
@@ -229,10 +256,10 @@ def cmd_import(args):
     # 文件级进度条；tqdm 未安装时优雅降级
     try:
         from tqdm import tqdm
-    except ImportError:
-        tqdm = None  # type: ignore[misc]
 
-    progress = tqdm(total=None, unit="file", desc="导入文件") if tqdm else None
+        progress = tqdm(total=None, unit="file", desc="导入文件")
+    except ImportError:
+        progress = None
     try:
         def _update(current: int, total: int) -> None:
             if progress is not None:
@@ -634,6 +661,12 @@ def main():
     p_memories_forget = p_memories_sub.add_parser("forget", help="删除一条记忆")
     p_memories_forget.add_argument("memory_id", help="记忆 ID（可只给前 8 位，自动匹配）")
 
+    p_memories_backfill = p_memories_sub.add_parser(
+        "backfill", help="回填旧记忆的 L1 字段（启发式，零 LLM）"
+    )
+    p_memories_backfill.add_argument("--limit", type=int, default=0, help="最多处理条数（0=全部）")
+    p_memories_backfill.add_argument("--dry-run", action="store_true", help="只预览不改库")
+
     # consolidate
     p_consolidate = sub.add_parser("consolidate", help="整理知识库：合并相似 chunk")
     p_consolidate.add_argument("--threshold", type=float, default=0.6,
@@ -713,6 +746,7 @@ def main():
             "search": cmd_memories_search,
             "cleanup": cmd_memories_cleanup,
             "forget": cmd_memories_forget,
+            "backfill": cmd_memories_backfill,
         }.get(memories_cmd, lambda a: p_memories.print_help())(args)
         return
 

@@ -156,7 +156,20 @@ class Searcher:
             engine_cls = BM25Engine
 
         engine = engine_cls(self.cfg)
-        result = engine.search(query, limit, tag)
+        fetch_limit = limit
+        if self.cfg.rerank.enabled:
+            fetch_limit = max(limit, self.cfg.rerank.top_k)
+        result = engine.search(query, fetch_limit, tag)
+
+        if self.cfg.rerank.enabled:
+            from .rerank import Reranker
+
+            reranker = Reranker(self.cfg.rerank)
+            if reranker.available():
+                reranked = reranker.rerank(query, result.get("results", []), self.cfg.rerank.top_k)
+                result["results"] = reranked[:limit]
+                result["total"] = len(result["results"])
+                result["rerank"] = {"model": self.cfg.rerank.model, "candidates": len(reranked)}
 
         if include_memories:
             result["memories"] = self._search_memories(query, limit)

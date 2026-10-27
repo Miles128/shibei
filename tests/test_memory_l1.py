@@ -45,8 +45,29 @@ def test_search_returns_l1_fields(tmp_path):
     assert hits[0]["confidence"] == 0.85
 
 
+def test_update_l1_only_touches_fields(tmp_path):
+    store = MemoryStore(tmp_path)
+    row = store.add("用户喜欢简洁回答", category="preference", supersede_threshold=0.99)
+    assert store.update_l1(
+        row["id"], memory_type="persona", priority=80, scene_name="偏好", confidence=0.7
+    )
+    got = store.get(row["id"])
+    assert got["fact"] == "用户喜欢简洁回答"
+    assert got["memory_type"] == "persona"
+    assert got["priority"] == 80
+    assert got["scene_name"] == "偏好"
+    assert got["confidence"] == 0.7
+
+
+def test_explicit_supersedes_id(tmp_path):
+    store = MemoryStore(tmp_path)
+    old = store.add("用户喜欢 Python", supersede_threshold=0.99)
+    new = store.add("用户喜欢 Go", supersedes_id=old["id"], supersede_threshold=0.99)
+    assert new["supersedes"] == old["id"]
+    assert store.get(old["id"])["superseded_by"] == new["id"]
+
+
 def test_migration_adds_l1_columns(tmp_path):
-    """旧库没有 L1 列时，构造 MemoryStore 应自动补列。"""
     db_file = tmp_path / "fts5.db"
     with sqlite3.connect(db_file) as conn:
         conn.execute(

@@ -77,7 +77,7 @@ def build_user_prompt(message: str, *, background: str = "", message_id: str = "
     return "\n\n".join(parts)
 
 
-def _strip_fences(raw: str) -> str:
+def strip_json_fences(raw: str) -> str:
     text = raw.strip()
     if text.startswith("```"):
         text = re.sub(r"^```[a-zA-Z0-9_-]*\s*", "", text)
@@ -105,6 +105,28 @@ def _as_id_list(value: Any) -> str:
     return ""
 
 
+def classify_heuristic(fact: str) -> dict:
+    """无 LLM 的 L1 粗分类，用于回填旧记忆。
+
+    只保证「有类型/优先级」，不保证精度；需要高质量时用 auto_memory 重抽。
+    """
+    text = fact.strip()
+    instruction_markers = ("以后", "不要", "必须", "记住", "要求", "每次", "禁止", "一律")
+    persona_markers = ("喜欢", "偏好", "习惯", "擅长", "常用", "倾向于", "不喜欢")
+    if any(marker in text for marker in instruction_markers):
+        memory_type, priority = "instruction", 80
+    elif any(marker in text for marker in persona_markers):
+        memory_type, priority = "persona", 70
+    else:
+        memory_type, priority = "episodic", 60
+    return {
+        "memory_type": memory_type,
+        "priority": priority,
+        "scene_name": "",
+        "confidence": 0.5,
+    }
+
+
 def parse_extraction(raw: str, *, default_message_id: str = "") -> list[dict]:
     """把 LLM 输出解析为扁平的 L1 记忆列表。
 
@@ -113,7 +135,7 @@ def parse_extraction(raw: str, *, default_message_id: str = "") -> list[dict]:
     解析失败返回空列表（调用方降级）。
     """
     try:
-        data = json.loads(_strip_fences(raw))
+        data = json.loads(strip_json_fences(raw))
     except (json.JSONDecodeError, TypeError, ValueError):
         return []
 

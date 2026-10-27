@@ -66,6 +66,7 @@ class AbstractMemoryStore(ABC):
         priority: int = 0,
         scene_name: str = "",
         confidence: float = 0.0,
+        supersedes_id: str = "",
     ) -> dict:
         """写入一条记忆。"""
         ...
@@ -172,6 +173,7 @@ class MemoryStore(AbstractMemoryStore):
         priority: int = 0,
         scene_name: str = "",
         confidence: float = 0.0,
+        supersedes_id: str = "",
     ) -> dict:
         """写入一条记忆，并尝试建立版本链。
 
@@ -183,6 +185,7 @@ class MemoryStore(AbstractMemoryStore):
             priority: 0-100；instruction 可为 -1（严格死命令）。
             scene_name: L2 情境名，用于后续场景聚合。
             confidence: 0-1，抽取置信度。
+            supersedes_id: 显式指定被替代的旧记忆（在线去重判断为 update 时使用）。
         """
         fact = fact.strip()
         if not fact:
@@ -199,14 +202,17 @@ class MemoryStore(AbstractMemoryStore):
             tag_set.add(memory_type)
         tags = ",".join(sorted(tag_set))
 
-        # 查找最相似的现有记忆
+        # 查找最相似的现有记忆（显式 supersedes_id 优先）
         supersedes = None
-        similar = self._find_most_similar(fact, category, limit=1)
-        if similar:
-            top = similar[0]
-            score = top.get("score", 0.0)
-            if score >= supersede_threshold:
-                supersedes = top["id"]
+        if supersedes_id and self.get(supersedes_id):
+            supersedes = supersedes_id
+        else:
+            similar = self._find_most_similar(fact, category, limit=1)
+            if similar:
+                top = similar[0]
+                score = top.get("score", 0.0)
+                if score >= supersede_threshold:
+                    supersedes = top["id"]
 
         with sqlite3.connect(str(self.db_file), timeout=30.0) as conn:
             cur = conn.execute(
@@ -577,6 +583,31 @@ class MemoryStore(AbstractMemoryStore):
             }
             for r in candidates
         ]
+
+    def update_l1(
+        self,
+        memory_id: str,
+        *,
+        memory_type: str,
+        priority: int,
+        scene_name: str,
+        confidence: float,
+    ) -> bool:
+        """只回填 L1 结构化字段，不改写 fact。"""
+        rowid = self._rowid_by_id(memory_id)
+        if rowid is None:
+            return False
+        with sqlite3.connect(str(self.db_file), timeout=30.0) as conn:
+            conn.execute(
+                f"""
+                UPDATE {MEMORIES_TABLE}
+                SET memory_type = ?, priority = ?, scene_name = ?, confidence = ?
+                WHERE rowid = ?
+                """,
+                (memory_type, int(priority), scene_name, float(confidence), rowid),
+            )
+            conn.commit()
+        return True
 
     def update(self, memory_id: str, fact: str, tags: 'str | None' = None) -> bool:
         """更新一条记忆的内容（用于外部 Agent 执行压缩/修正）。"""
