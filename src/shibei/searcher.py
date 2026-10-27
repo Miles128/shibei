@@ -182,6 +182,11 @@ class Searcher:
                 "tags": r.get("tags", ""),
                 "category": r.get("category", ""),
                 "created_at": r.get("created_at", ""),
+                "memory_type": r.get("memory_type", ""),
+                "priority": r.get("priority", 0),
+                "scene_name": r.get("scene_name", ""),
+                "confidence": r.get("confidence", 0.0),
+                "source_message_ids": r.get("source_message_ids", ""),
             }
             for r in rows
         ]

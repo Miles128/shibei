@@ -107,6 +107,10 @@ class FakeBrain:
         tags: str = "",
         expires_at: str | None = None,
         source_message_ids: str = "",
+        memory_type: str = "",
+        priority: int = 0,
+        scene_name: str = "",
+        confidence: float = 0.0,
     ):
         self.calls.append(
             (
@@ -118,6 +122,10 @@ class FakeBrain:
                     "tags": tags,
                     "expires_at": expires_at,
                     "source_message_ids": source_message_ids,
+                    "memory_type": memory_type,
+                    "priority": priority,
+                    "scene_name": scene_name,
+                    "confidence": confidence,
                 },
             )
         )
@@ -293,6 +301,10 @@ def test_server_tools_list(server_env, monkeypatch):
                     "tags": "py",
                     "expires_at": None,
                     "source_message_ids": "",
+                    "memory_type": "",
+                    "priority": 0,
+                    "scene_name": "",
+                    "confidence": 0.0,
                 },
             ),
         ),

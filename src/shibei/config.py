@@ -139,6 +139,7 @@ class AutoMemoryConfig:
     category: str = "user"                      # 自动写入的记忆分类
     source: str = "auto"                        # 来源标记
     max_facts: int = 3                          # 单次最多抽取条数
+    min_priority: int = 0                       # 低于该优先级的记忆丢弃（-1 死命令除外）
 
 
 DEFAULT_IGNORE_DIRS = (

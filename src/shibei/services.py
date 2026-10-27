@@ -132,10 +132,15 @@ class Shibei:
         tags: str = "",
         expires_at: 'str | None' = None,
         source_message_ids: str = "",
+        memory_type: str = "",
+        priority: int = 0,
+        scene_name: str = "",
+        confidence: float = 0.0,
     ) -> dict:
         """写入一条 Agent 对话记忆。
 
         source_message_ids: 溯源字段，触发该记忆的原始消息 ID（对标 TencentDB L1 溯源链）。
+        memory_type/priority/scene_name/confidence: L1 结构化字段。
         """
         store = self._memory_store()
         return store.add(
@@ -145,6 +150,10 @@ class Shibei:
             tags=tags,
             expires_at=expires_at,
             source_message_ids=source_message_ids,
+            memory_type=memory_type,
+            priority=priority,
+            scene_name=scene_name,
+            confidence=confidence,
         )
 
     def persona(
@@ -157,17 +166,30 @@ class Shibei:
             per_category=per_category, max_facts=max_facts
         )
 
-    def auto_remember(self, message: str) -> list[dict]:
-        """自动记忆抽取（P1，默认关闭）：用 LLM 从消息抽取事实并写入。
+    def auto_remember(
+        self,
+        message: str,
+        source_message_ids: str = "",
+        scene_name: str = "",
+    ) -> list[dict]:
+        """自动记忆抽取（默认关闭）：用 LLM 抽取 L1 结构化记忆并写入。
 
         仅当 config.auto_memory.enabled 且设置了 SHIBEI_LLM_API_KEY 时生效；
         抽取失败或没有新事实返回空列表，不抛异常。
+
+        输出沿用 TencentDB L1 的思路：persona / episodic / instruction 三类，
+        带 priority、confidence、scene_name 与 source_message_ids。
         """
         am = self.config.auto_memory
         if not am.enabled:
             return []
         from .llm import LLMClient, LLMOptions
         from .memory import MemoryStore
+        from .memory_extract import (
+            EXTRACT_SYSTEM_PROMPT,
+            build_user_prompt,
+            parse_extraction,
+        )
 
         try:
             client = LLMClient(LLMOptions(
@@ -175,38 +197,38 @@ class Shibei:
                 model=self.config.llm.model,
                 timeout=self.config.llm.timeout,
                 temperature=0.0,
-                max_tokens=200,
+                max_tokens=1200,
             ))
-            prompt = (
-                "从下面的用户消息中，提取值得长期记住的客观事实"
-                "（偏好、习惯、目标、项目背景、关键决策、技术栈等）。\n"
-                "规则：\n"
-                "1. 用简洁第三人称陈述句，一条一行，不要编号\n"
-                "2. 忽略寒暄、提问、无信息量内容\n"
-                f"3. 最多输出 {am.max_facts} 条；没有可记的事实输出空行\n\n"
-                f"用户消息：{message[:2000]}"
-            )
             raw = client.chat([
-                {"role": "system", "content": "你是记忆提取器，只输出事实列表。"},
-                {"role": "user", "content": prompt},
+                {"role": "system", "content": EXTRACT_SYSTEM_PROMPT},
+                {"role": "user", "content": build_user_prompt(
+                    message, message_id=source_message_ids
+                )},
             ])
         except Exception as exc:  # noqa: BLE001
             logger.warning("自动记忆抽取失败: %s", exc)
             return []
 
+        items = parse_extraction(raw, default_message_id=source_message_ids)
+        if not items:
+            return []
+
         store = MemoryStore(self.config.db_path_expanded)
-        written = []
-        for line in raw.splitlines():
-            fact = line.strip().lstrip("-•*0123456789. ")
-            if not fact or len(fact) < 4:
+        written: list[dict] = []
+        for item in items:
+            if item["priority"] < am.min_priority and item["priority"] != -1:
                 continue
             try:
                 written.append(store.add(
-                    fact=fact,
+                    fact=item["content"],
                     category=am.category,
                     source=am.source,
-                    tags=am.category,
-                    source_message_ids="auto",
+                    tags=item["memory_type"],
+                    source_message_ids=item["source_message_ids"] or source_message_ids,
+                    memory_type=item["memory_type"],
+                    priority=item["priority"],
+                    scene_name=item["scene_name"] or scene_name,
+                    confidence=item["confidence"],
                 ))
             except ValueError:
                 continue

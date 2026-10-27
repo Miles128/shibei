@@ -131,8 +131,11 @@ AI: [人工智能, 大模型, 机器学习]
 通过 `shibei_remember`（MCP）或 `shibei remember`（CLI）把对话中的关键事实写入长期记忆。记忆支持：
 
 - BM25 全文召回
+- **L1 结构化字段**：`memory_type`（persona / episodic / instruction）、`priority`、`confidence`、`scene_name`、`source_message_ids` 溯源
 - 版本链：新事实自动替代语义相似旧事实，历史可追溯
 - 与文档库融合搜索：一次搜索同时召回文档 chunk 和相关记忆
+
+开启 `auto_memory`（需要 `SHIBEI_LLM_API_KEY`）后，`shibei_context` 会用一次 LLM 调用同时做情境切分与结构化抽取，按优先级过滤后写入，无需宿主手动 `remember`。
 
 ```bash
 shibei remember "用户偏好 Python 而不是 Go" --category preference --tags tech

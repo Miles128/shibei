@@ -116,3 +116,4 @@ auto_memory:
   category: user                   # 自动写入的记忆分类
   source: auto                     # 来源标记
   max_facts: 3                     # 单次最多抽取条数
+  min_priority: 0                  # 低于该优先级的记忆丢弃（instruction 的 -1 除外）

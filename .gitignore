@@ -5,3 +5,6 @@ dist/
 .shibei/
 .env
 config.yaml
+
+# local config backups
+config.yaml.bak-*

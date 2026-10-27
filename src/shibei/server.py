@@ -121,6 +121,10 @@ def _handle_remember(brain, args):
         tags=args.get("tags", ""),
         expires_at=args.get("expires_at"),
         source_message_ids=args.get("source_message_ids", ""),
+        memory_type=args.get("memory_type", ""),
+        priority=args.get("priority", 0),
+        scene_name=args.get("scene_name", ""),
+        confidence=args.get("confidence", 0.0),
     )
 
 
@@ -378,6 +382,23 @@ TOOLS: dict[str, dict[str, Any]] = {
                 "source_message_ids": {
                     "type": "string",
                     "description": "溯源：触发该记忆的原始消息 ID（逗号分隔）。召回时随记忆返回，便于回溯到原始对话。",
+                },
+                "memory_type": {
+                    "type": "string",
+                    "enum": ["persona", "episodic", "instruction"],
+                    "description": "L1 语义类型：persona=稳定偏好/身份，episodic=发生过的事件/决策，instruction=长期行为规则",
+                },
+                "priority": {
+                    "type": "integer",
+                    "description": "0-100；instruction 可用 -1 表示严格死命令",
+                },
+                "scene_name": {
+                    "type": "string",
+                    "description": "L2 情境名，如「我在和四海做 dsh 迁移」",
+                },
+                "confidence": {
+                    "type": "number",
+                    "description": "0-1 抽取置信度",
                 },
                 "expires_at": {
                     "type": "string",
