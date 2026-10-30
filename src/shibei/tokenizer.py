@@ -19,6 +19,14 @@ _MIXED_SEGMENT_RE = re.compile(
 # Markdown / 格式噪音：#、##、###、---、***、> 等
 _NOISE_RE = re.compile(r"^[#\-*=|>_+\s\d]+$")
 
+# 查询相关性门槛用的停用词：只保留承载信息的词
+_QUERY_STOPWORDS = {
+    "的", "了", "吗", "呢", "吧", "啊", "呀", "嘛", "是", "有", "在",
+    "和", "与", "或", "及", "这个", "那个", "什么", "怎么", "怎么样",
+    "如何", "哪个", "哪些", "请", "帮", "我", "你", "您", "他", "她",
+    "我们", "你们", "他们", "需要", "可以", "一个", "一下",
+}
+
 
 def is_noise_token(token: str) -> bool:
     """判断 token 是否为 Markdown 格式符号、纯数字、纯空白等无意义词。"""
@@ -110,6 +118,53 @@ def tokenize_query(text: str) -> str:
 
     # 降级：连续中文保持短语+bigram
     return _bigram_query_tokenize(text)
+
+
+def query_terms(text: str, max_terms: int = 20) -> list[str]:
+    """提取查询的核心词（去停用词/单字），用于相关性覆盖率门槛。"""
+    text = (text or "").strip()
+    if not text:
+        return []
+    terms: list[str] = []
+    if jieba_available():
+        import jieba
+        candidates = [t.strip() for t in jieba.cut(text)]
+    else:
+        candidates = []
+        for chunk in _iter_mixed_segments(text):
+            if _CHINESE_RE.fullmatch(chunk):
+                candidates.append(chunk)
+            else:
+                candidates.extend(_ALNUM_RE.findall(chunk))
+    for term in candidates:
+        if len(term) < 2 or term in _QUERY_STOPWORDS:
+            continue
+        if not any(ch.isalnum() or _CN_CHAR_RE.match(ch) for ch in term):
+            continue
+        if term not in terms:
+            terms.append(term)
+        if len(terms) >= max_terms:
+            break
+    return terms
+
+
+def query_coverage_groups(text: str, groups: list[list[str]]) -> float:
+    """按同义词/模糊候选分组计算覆盖度：组内任一词命中即算该组命中。"""
+    if not groups:
+        return 1.0
+    lowered = (text or "").lower()
+    total = 0
+    matched = 0
+    for group in groups:
+        alternatives = [t for t in group if t]
+        if not alternatives:
+            continue
+        # 权重按原始查询词算，避免长英文同义词（interview）抬高泛词的分量
+        weight = max(len(alternatives[0]) - 1, 0)
+        total += weight
+        if any(t.lower() in lowered for t in alternatives):
+            matched += weight
+    return matched / total if total else 1.0
 
 
 def _bigram_tokenize(text: str) -> str:

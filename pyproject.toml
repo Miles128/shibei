@@ -31,7 +31,13 @@ dev = ["pytest>=7", "pytest-asyncio", "mypy>=1.0"]
 docx = ["python-docx>=1.0"]
 xlsx = ["openpyxl>=3.1"]
 jieba = ["jieba>=0.42"]
-all = ["python-docx>=1.0", "openpyxl>=3.1", "jieba>=0.42"]
+vector = ["fastembed>=0.9"]
+all = [
+    "python-docx>=1.0",
+    "openpyxl>=3.1",
+    "jieba>=0.42",
+    "tqdm>=4.60",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]

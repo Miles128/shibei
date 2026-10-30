@@ -19,6 +19,7 @@ class Shibei:
 
     def __init__(self, config_path: str = "config.yaml"):
         self.config = load_config(config_path)
+        self.config.db_path_expanded.mkdir(parents=True, exist_ok=True)
 
     def search(
         self,
@@ -26,9 +27,38 @@ class Shibei:
         limit: int = 5,
         tag: 'str | None' = None,
         include_memories: bool = True,
+        rewrite: 'bool | None' = None,
+        llm_rewrite: 'bool | None' = None,
+        expand: 'bool | None' = None,
+        fuzzy: 'bool | None' = None,
+        synonyms: 'str | None' = None,
     ) -> dict:
+        from copy import deepcopy
+
         from .searcher import Searcher
-        return Searcher(self.config).search(
+
+        cfg = self.config
+        if any(
+            x is not None
+            for x in (rewrite, llm_rewrite, expand, fuzzy, synonyms)
+        ):
+            cfg = deepcopy(self.config)
+            if rewrite:
+                cfg.rewriter.enabled = True
+            if llm_rewrite:
+                cfg.rewriter.enabled = True
+                cfg.rewriter.use_llm = True
+            if expand is True:
+                cfg.expander.enabled = True
+            elif expand is False:
+                cfg.expander.enabled = False
+            if synonyms:
+                cfg.expander.synonyms_path = synonyms
+                cfg.expander.enabled = True
+            if fuzzy:
+                cfg.expander.fuzzy = True
+                cfg.expander.enabled = True
+        return Searcher(cfg).search(
             query, limit, tag, include_memories=include_memories
         )
 
@@ -102,10 +132,15 @@ class Shibei:
         tags: str = "",
         expires_at: 'str | None' = None,
         source_message_ids: str = "",
+        memory_type: str = "",
+        priority: int = 0,
+        scene_name: str = "",
+        confidence: float = 0.0,
     ) -> dict:
         """写入一条 Agent 对话记忆。
 
         source_message_ids: 溯源字段，触发该记忆的原始消息 ID（对标 TencentDB L1 溯源链）。
+        memory_type/priority/scene_name/confidence: L1 结构化字段。
         """
         store = self._memory_store()
         return store.add(
@@ -115,6 +150,10 @@ class Shibei:
             tags=tags,
             expires_at=expires_at,
             source_message_ids=source_message_ids,
+            memory_type=memory_type,
+            priority=priority,
+            scene_name=scene_name,
+            confidence=confidence,
         )
 
     def persona(
@@ -127,17 +166,30 @@ class Shibei:
             per_category=per_category, max_facts=max_facts
         )
 
-    def auto_remember(self, message: str) -> list[dict]:
-        """自动记忆抽取（P1，默认关闭）：用 LLM 从消息抽取事实并写入。
+    def auto_remember(
+        self,
+        message: str,
+        source_message_ids: str = "",
+        scene_name: str = "",
+    ) -> list[dict]:
+        """自动记忆抽取（默认关闭）：用 LLM 抽取 L1 结构化记忆并写入。
 
         仅当 config.auto_memory.enabled 且设置了 SHIBEI_LLM_API_KEY 时生效；
         抽取失败或没有新事实返回空列表，不抛异常。
+
+        输出沿用 TencentDB L1 的思路：persona / episodic / instruction 三类，
+        带 priority、confidence、scene_name 与 source_message_ids。
         """
         am = self.config.auto_memory
         if not am.enabled:
             return []
         from .llm import LLMClient, LLMOptions
         from .memory import MemoryStore
+        from .memory_extract import (
+            EXTRACT_SYSTEM_PROMPT,
+            build_user_prompt,
+            parse_extraction,
+        )
 
         try:
             client = LLMClient(LLMOptions(
@@ -145,38 +197,57 @@ class Shibei:
                 model=self.config.llm.model,
                 timeout=self.config.llm.timeout,
                 temperature=0.0,
-                max_tokens=200,
+                max_tokens=1200,
             ))
-            prompt = (
-                "从下面的用户消息中，提取值得长期记住的客观事实"
-                "（偏好、习惯、目标、项目背景、关键决策、技术栈等）。\n"
-                "规则：\n"
-                "1. 用简洁第三人称陈述句，一条一行，不要编号\n"
-                "2. 忽略寒暄、提问、无信息量内容\n"
-                f"3. 最多输出 {am.max_facts} 条；没有可记的事实输出空行\n\n"
-                f"用户消息：{message[:2000]}"
-            )
             raw = client.chat([
-                {"role": "system", "content": "你是记忆提取器，只输出事实列表。"},
-                {"role": "user", "content": prompt},
+                {"role": "system", "content": EXTRACT_SYSTEM_PROMPT},
+                {"role": "user", "content": build_user_prompt(
+                    message, message_id=source_message_ids
+                )},
             ])
         except Exception as exc:  # noqa: BLE001
             logger.warning("自动记忆抽取失败: %s", exc)
             return []
 
+        items = parse_extraction(raw, default_message_id=source_message_ids)
+        items = [
+            item for item in items
+            if item["priority"] >= am.min_priority or item["priority"] == -1
+        ]
+        if not items:
+            return []
+
         store = MemoryStore(self.config.db_path_expanded)
-        written = []
-        for line in raw.splitlines():
-            fact = line.strip().lstrip("-•*0123456789. ")
-            if not fact or len(fact) < 4:
+
+        # 在线去重：先召回候选，再一次批量判断 store/update/skip
+        decisions = None
+        if am.dedup:
+            from .memory_dedup import decide
+
+            candidates = [
+                store.search(item["content"], limit=am.dedup_candidates)
+                for item in items
+            ]
+            decisions = decide(client, items, candidates)
+
+        written: list[dict] = []
+        for index, item in enumerate(items):
+            decision = decisions[index] if decisions else None
+            if decision and decision["action"] == "skip":
                 continue
+            supersedes_id = decision["target_id"] if decision and decision["action"] == "update" else ""
             try:
                 written.append(store.add(
-                    fact=fact,
+                    fact=item["content"],
                     category=am.category,
                     source=am.source,
-                    tags=am.category,
-                    source_message_ids="auto",
+                    tags=item["memory_type"],
+                    source_message_ids=item["source_message_ids"] or source_message_ids,
+                    memory_type=item["memory_type"],
+                    priority=item["priority"],
+                    scene_name=item["scene_name"] or scene_name,
+                    confidence=item["confidence"],
+                    supersedes_id=supersedes_id,
                 ))
             except ValueError:
                 continue

@@ -1,6 +1,6 @@
 # MCP 集成指南
 
-拾贝（Shibei）通过 MCP (Model Context Protocol) stdio JSON-RPC 暴露工具，任何 MCP 兼容的 AI Agent 都能接入。
+拾贝（Shibei）通过 MCP (Model Context Protocol) stdio JSON-RPC 暴露工具。MCP 进程**不打开数据库**，所有工具经 sidecar 的 `/v1` HTTP（与 CLI、DeepSeek Harness 插件同一条 RPC）。第一次调用会自动拉起 `shibei sidecar`。工具名与参数不变。
 
 ## 多宿主强制召回契约
 

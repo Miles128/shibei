@@ -60,6 +60,13 @@ class AbstractMemoryStore(ABC):
         tags: str = "",
         expires_at: Optional[str] = None,
         supersede_threshold: float = 0.7,
+        created_at: Optional[str] = None,
+        source_message_ids: str = "",
+        memory_type: str = "",
+        priority: int = 0,
+        scene_name: str = "",
+        confidence: float = 0.0,
+        supersedes_id: str = "",
     ) -> dict:
         """写入一条记忆。"""
         ...
@@ -127,6 +134,17 @@ class MemoryStore(AbstractMemoryStore):
                 conn.execute(
                     f"ALTER TABLE {MEMORIES_TABLE} ADD COLUMN source_message_ids TEXT DEFAULT ''"
                 )
+            # L1 结构化字段（对标 TencentDB L1 原子记忆）
+            for column, ddl in (
+                ("memory_type", "TEXT DEFAULT ''"),
+                ("priority", "INTEGER DEFAULT 0"),
+                ("scene_name", "TEXT DEFAULT ''"),
+                ("confidence", "REAL DEFAULT 0"),
+            ):
+                if column not in cols:
+                    conn.execute(
+                        f"ALTER TABLE {MEMORIES_TABLE} ADD COLUMN {column} {ddl}"
+                    )
             conn.execute(
                 f"""
                 CREATE VIRTUAL TABLE IF NOT EXISTS {FTS_TABLE} USING fts5(
@@ -151,6 +169,11 @@ class MemoryStore(AbstractMemoryStore):
         supersede_threshold: float = 0.7,
         created_at: Optional[str] = None,
         source_message_ids: str = "",
+        memory_type: str = "",
+        priority: int = 0,
+        scene_name: str = "",
+        confidence: float = 0.0,
+        supersedes_id: str = "",
     ) -> dict:
         """写入一条记忆，并尝试建立版本链。
 
@@ -158,6 +181,11 @@ class MemoryStore(AbstractMemoryStore):
             source_message_ids: 溯源字段，宿主传入触发该记忆的原始消息 ID
                 （对标 TencentDB L1 原子记忆的 source_message_ids 溯源链），
                 召回时随记忆返回，Agent 可回溯到原始对话。
+            memory_type: persona | episodic | instruction（L1 语义类型）。
+            priority: 0-100；instruction 可为 -1（严格死命令）。
+            scene_name: L2 情境名，用于后续场景聚合。
+            confidence: 0-1，抽取置信度。
+            supersedes_id: 显式指定被替代的旧记忆（在线去重判断为 update 时使用）。
         """
         fact = fact.strip()
         if not fact:
@@ -170,29 +198,37 @@ class MemoryStore(AbstractMemoryStore):
         source = (source or "").strip() or "agent"
         tag_set = {t.strip() for t in (tags or "").split(",") if t.strip()}
         tag_set.add(source)
+        if memory_type:
+            tag_set.add(memory_type)
         tags = ",".join(sorted(tag_set))
 
-        # 查找最相似的现有记忆
+        # 查找最相似的现有记忆（显式 supersedes_id 优先）
         supersedes = None
-        similar = self._find_most_similar(fact, category, limit=1)
-        if similar:
-            top = similar[0]
-            score = top.get("score", 0.0)
-            if score >= supersede_threshold:
-                supersedes = top["id"]
+        if supersedes_id and self.get(supersedes_id):
+            supersedes = supersedes_id
+        else:
+            similar = self._find_most_similar(fact, category, limit=1)
+            if similar:
+                top = similar[0]
+                score = top.get("score", 0.0)
+                if score >= supersede_threshold:
+                    supersedes = top["id"]
 
         with sqlite3.connect(str(self.db_file), timeout=30.0) as conn:
             cur = conn.execute(
                 f"""
                 INSERT INTO {MEMORIES_TABLE}
                 (id, fact, category, source, tags, created_at, expires_at,
-                 supersedes, superseded_by, source_message_ids)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 supersedes, superseded_by, source_message_ids,
+                 memory_type, priority, scene_name, confidence)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     memory_id, fact, category or "", source,
                     tags, created_at, expires_at or "",
                     supersedes or "", "", source_message_ids or "",
+                    memory_type or "", int(priority or 0), scene_name or "",
+                    float(confidence or 0.0),
                 ),
             )
             rowid = cur.lastrowid
@@ -286,6 +322,7 @@ class MemoryStore(AbstractMemoryStore):
         sql = f"""
             SELECT m.id, m.fact, m.category, m.source, m.tags, m.created_at,
                    m.expires_at, m.supersedes, m.superseded_by, m.source_message_ids,
+                   m.memory_type, m.priority, m.scene_name, m.confidence,
                    rank AS score
             FROM {FTS_TABLE} f
             JOIN {MEMORIES_TABLE} m ON m.rowid = f.rowid
@@ -330,6 +367,10 @@ class MemoryStore(AbstractMemoryStore):
                 "supersedes": row["supersedes"],
                 "superseded_by": row["superseded_by"],
                 "source_message_ids": row["source_message_ids"] or "",
+                "memory_type": row["memory_type"] or "",
+                "priority": row["priority"] or 0,
+                "scene_name": row["scene_name"] or "",
+                "confidence": row["confidence"] or 0.0,
                 "score": score,
             })
         return results
@@ -386,7 +427,9 @@ class MemoryStore(AbstractMemoryStore):
         with sqlite3.connect(str(self.db_file), timeout=30.0) as conn:
             conn.row_factory = sqlite3.Row
             sql = f"""
-                SELECT fact, category, created_at, source_message_ids FROM {MEMORIES_TABLE}
+                SELECT fact, category, created_at, source_message_ids,
+                       memory_type, priority, scene_name
+                FROM {MEMORIES_TABLE}
                 WHERE 1=1
             """
             params: list = []
@@ -407,6 +450,8 @@ class MemoryStore(AbstractMemoryStore):
                 "fact": r["fact"],
                 "created_at": r["created_at"],
                 "source_message_ids": r["source_message_ids"] or "",
+                "memory_type": r["memory_type"] or "",
+                "scene_name": r["scene_name"] or "",
             })
             total += 1
 
@@ -538,6 +583,31 @@ class MemoryStore(AbstractMemoryStore):
             }
             for r in candidates
         ]
+
+    def update_l1(
+        self,
+        memory_id: str,
+        *,
+        memory_type: str,
+        priority: int,
+        scene_name: str,
+        confidence: float,
+    ) -> bool:
+        """只回填 L1 结构化字段，不改写 fact。"""
+        rowid = self._rowid_by_id(memory_id)
+        if rowid is None:
+            return False
+        with sqlite3.connect(str(self.db_file), timeout=30.0) as conn:
+            conn.execute(
+                f"""
+                UPDATE {MEMORIES_TABLE}
+                SET memory_type = ?, priority = ?, scene_name = ?, confidence = ?
+                WHERE rowid = ?
+                """,
+                (memory_type, int(priority), scene_name, float(confidence), rowid),
+            )
+            conn.commit()
+        return True
 
     def update(self, memory_id: str, fact: str, tags: 'str | None' = None) -> bool:
         """更新一条记忆的内容（用于外部 Agent 执行压缩/修正）。"""

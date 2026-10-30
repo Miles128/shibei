@@ -80,6 +80,20 @@ class RelatedConfig:
 
 
 @dataclass
+class RerankConfig:
+    """Cross-encoder 重排（可选，默认关）。
+
+    初筛 BM25/向量召回 top_k 后，用 fastembed 的本地 reranker 重新打分，
+    取前 limit 条。适合压掉「关键词命中但语义不相关」的噪声。
+    """
+
+    enabled: bool = False
+    model: str = "BAAI/bge-reranker-base"
+    top_k: int = 20             # 初筛候选数
+    batch_size: int = 8
+
+
+@dataclass
 class LLMConfig:
     """LLM 摘要生成配置。
 
@@ -87,6 +101,7 @@ class LLMConfig:
     """
 
     enabled: bool = False                       # 是否启用 LLM 摘要
+    preset: str = "custom"                      # deepseek | openai | ollama | custom
     base_url: str = "https://api.openai.com/v1"  # OpenAI-compatible API 地址
     model: str = "gpt-4o-mini"                  # 模型名称
     timeout: float = 30.0                       # HTTP 超时（秒）
@@ -112,6 +127,8 @@ class VectorConfig:
     model: str = "BAAI/bge-small-zh-v1.5"       # 本地模型名或 API 侧的 embedding 模型名
     dim: int = 512                              # 向量维度（bge-small-zh-v1.5 = 512）
     batch_size: int = 16                        # 批量 embedding 大小
+    min_score: float = 0.5                      # 余弦相似度下限；同领域中文语料通常 0.6+，0.5 只滤掉明显无关
+    add_new_rows: bool = False                  # 是否允许向量引入 BM25 未命中的文档（默认只重排已命中项）
 
 
 @dataclass
@@ -139,6 +156,23 @@ class AutoMemoryConfig:
     category: str = "user"                      # 自动写入的记忆分类
     source: str = "auto"                        # 来源标记
     max_facts: int = 3                          # 单次最多抽取条数
+    min_priority: int = 0                       # 低于该优先级的记忆丢弃（-1 死命令除外）
+    dedup: bool = True                          # 在线冲突检测（多一次批量 LLM 调用）
+    dedup_candidates: int = 5                   # 每条新记忆召回的候选数
+
+
+LLM_PRESETS = {
+    "deepseek": ("https://api.deepseek.com/v1", "deepseek-chat"),
+    "openai": ("https://api.openai.com/v1", "gpt-4o-mini"),
+    "ollama": ("http://127.0.0.1:11434/v1", "qwen2.5:7b"),
+}
+
+
+def apply_llm_preset(llm: LLMConfig) -> None:
+    """把 preset 展开成 base_url + model；custom 保持用户显式配置。"""
+    preset = (llm.preset or "custom").strip().lower()
+    if preset in LLM_PRESETS:
+        llm.base_url, llm.model = LLM_PRESETS[preset]
 
 
 DEFAULT_IGNORE_DIRS = (
@@ -171,6 +205,7 @@ class Config:
     expander: ExpanderConfig = field(default_factory=ExpanderConfig)
     rewriter: RewriterConfig = field(default_factory=RewriterConfig)
     related: RelatedConfig = field(default_factory=RelatedConfig)
+    rerank: RerankConfig = field(default_factory=RerankConfig)
     llm: LLMConfig = field(default_factory=LLMConfig)
     vector: VectorConfig = field(default_factory=VectorConfig)
     offload: OffloadConfig = field(default_factory=OffloadConfig)
@@ -258,9 +293,14 @@ def load_config(path: str = "config.yaml") -> Config:
     if "related" in raw:
         cfg.related = RelatedConfig(**raw["related"])
 
+    # 重排（可选）
+    if "rerank" in raw:
+        cfg.rerank = RerankConfig(**raw["rerank"])
+
     # LLM 摘要
     if "llm" in raw:
         cfg.llm = LLMConfig(**raw["llm"])
+    apply_llm_preset(cfg.llm)
 
     # 轻量向量混合（可选，默认关）
     if "vector" in raw:

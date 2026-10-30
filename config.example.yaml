@@ -78,6 +78,7 @@ expander:
 # 摘要失败时自动降级为空字符串，不会阻断导入。
 llm:
   enabled: false
+  preset: custom                   # deepseek | openai | ollama | custom（custom 用下面的 base_url/model）
   base_url: "https://api.openai.com/v1"
   model: "gpt-4o-mini"
   timeout: 30.0
@@ -99,6 +100,8 @@ vector:
   model: "BAAI/bge-small-zh-v1.5"  # 本地模型名或 API 侧 embedding 模型名
   dim: 512                         # 向量维度（bge-small-zh-v1.5 = 512）
   batch_size: 16                   # 批量 embedding 大小
+  min_score: 0.5                   # 余弦相似度下限；低于此值不参与融合
+  add_new_rows: false              # false=向量只重排 BM25 已命中项，避免零命中时返回纯向量噪声
 
 # === MCP 响应上下文卸载（对标 TencentDB 短期上下文治理） ===
 # shibei_context / shibei_search 结果超过 max_bytes 时，完整 JSON 写入
@@ -115,4 +118,15 @@ auto_memory:
   enabled: false
   category: user                   # 自动写入的记忆分类
   source: auto                     # 来源标记
-  max_facts: 3                     # 单次最多抽取条数
+  max_facts: 3
+  dedup: true
+  dedup_candidates: 5                     # 单次最多抽取条数
+  min_priority: 0                  # 低于该优先级的记忆丢弃（instruction 的 -1 除外）
+# === Cross-encoder 重排（可选，默认关） ===
+# 初筛 BM25/向量 top_k 后用本地 cross-encoder 重新打分，压掉关键词命中但不相关的噪声。
+# 依赖 fastembed；模型首次使用会从 HuggingFace 下载（国内可设 HF_ENDPOINT=https://hf-mirror.com）。
+rerank:
+  enabled: false
+  model: "BAAI/bge-reranker-base"
+  top_k: 20
+  batch_size: 8

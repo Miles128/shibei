@@ -107,6 +107,10 @@ class FakeBrain:
         tags: str = "",
         expires_at: str | None = None,
         source_message_ids: str = "",
+        memory_type: str = "",
+        priority: int = 0,
+        scene_name: str = "",
+        confidence: float = 0.0,
     ):
         self.calls.append(
             (
@@ -118,6 +122,10 @@ class FakeBrain:
                     "tags": tags,
                     "expires_at": expires_at,
                     "source_message_ids": source_message_ids,
+                    "memory_type": memory_type,
+                    "priority": priority,
+                    "scene_name": scene_name,
+                    "confidence": confidence,
                 },
             )
         )
@@ -157,7 +165,10 @@ def _run(stdin_lines: list[str]) -> list[dict]:
     """向 server.main 送入请求并解析返回的 JSON-RPC 响应。"""
     sys.stdin = StringIO("\n".join(stdin_lines) + "\n")
     server.main()
-    raw = sys.stdout.getvalue()
+    stdout = sys.stdout
+    if not isinstance(stdout, StringIO):
+        raise TypeError("expected StringIO stdout in tests")
+    raw = stdout.getvalue()
     return [json.loads(line) for line in raw.strip().split("\n") if line.strip()]
 
 
@@ -290,6 +301,10 @@ def test_server_tools_list(server_env, monkeypatch):
                     "tags": "py",
                     "expires_at": None,
                     "source_message_ids": "",
+                    "memory_type": "",
+                    "priority": 0,
+                    "scene_name": "",
+                    "confidence": 0.0,
                 },
             ),
         ),

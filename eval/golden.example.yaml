@@ -1,0 +1,9 @@
+# 检索评测集模板
+# expect 里写源文件的 basename，任一条命中即算召回；expect: [] 表示负例（期望零结果）。
+queries:
+  - query: "银行核心系统"
+    expect: ["bank-core.md", "银行核心系统.md"]
+  - query: "分布式缓存怎么选型"
+    expect: ["redis-notes.md", "cache-design.md"]
+  - query: "红烧肉怎么做"
+    expect: []

@@ -7,20 +7,27 @@
 ## 30 秒上手
 
 ```bash
-./setup.sh                      # 安装依赖
+./setup.sh                      # 安装依赖（需要 uv，缺省安装到 .venv）
+source .venv/bin/activate
 vim config.yaml                 # 改 sources 为你的文档目录
 shibei import                   # 增量导入
 shibei search "关键词"           # 搜索
 shibei serve                    # 启动 MCP server
 ```
 
-## 三层接口
+## 三层接口（都走 sidecar）
+
+所有外部入口共享一条 loopback HTTP：CLI / MCP / DeepSeek Harness 插件都不直连 SQLite。
 
 | 接口 | 命令 | 谁用 |
 |------|------|------|
+| Sidecar | `shibei sidecar --daemon` | 常驻内核 |
 | CLI | `shibei context/search/import/list/remember` | 人 |
-| MCP | `shibei serve` | AI Agent |
-| Python | `from shibei import Shibei` | 开发者 |
+| MCP | `shibei serve` | Cursor / Claude 等 |
+| DSH 插件 | `packages/dsh-shibei` | DeepSeek Harness |
+| Python | `from shibei.client import ShibeiClient` | 开发者（进程外） |
+
+`from shibei import Shibei` 仍是内核类，仅 sidecar 内部与单测使用。
 
 ## 核心特性
 
@@ -125,8 +132,24 @@ AI: [人工智能, 大模型, 机器学习]
 通过 `shibei_remember`（MCP）或 `shibei remember`（CLI）把对话中的关键事实写入长期记忆。记忆支持：
 
 - BM25 全文召回
+- **L1 结构化字段**：`memory_type`（persona / episodic / instruction）、`priority`、`confidence`、`scene_name`、`source_message_ids` 溯源
 - 版本链：新事实自动替代语义相似旧事实，历史可追溯
 - 与文档库融合搜索：一次搜索同时召回文档 chunk 和相关记忆
+
+开启 `auto_memory`（需要 `SHIBEI_LLM_API_KEY`）后，`shibei_context` 会用一次 LLM 调用同时做情境切分与结构化抽取，按优先级过滤后写入，无需宿主手动 `remember`。抽取后会再做一次**在线冲突检测**（候选召回 + 一次批量 LLM 判断 `store/update/skip`），避免重复记忆。
+
+旧库可以补 L1 字段：
+
+```bash
+shibei memories backfill --dry-run   # 预览
+shibei memories backfill             # 启发式回填（零 LLM）
+```
+
+检索可选开 cross-encoder 重排（`rerank.enabled`）：初筛 top_k 后用本地 `BAAI/bge-reranker-base` 重新打分。默认关闭，建议先用 `scripts/eval_retrieval.py` 在本地评测集上验证再开。
+
+BM25 结果会按「查询核心词覆盖率」过滤：只命中泛词（如"怎么/哪个/牌子"）的结果直接丢弃。向量默认只重排 BM25 已命中项（`vector.add_new_rows: false`），避免零命中时返回纯向量噪声；实测开启 `add_new_rows` 需把 `min_score` 提到 0.6 才不会引入负例误召。
+
+LLM 端点用 `llm.preset` 选择：`deepseek` / `openai` / `ollama` / `custom`（custom 用显式 `base_url` + `model`）。默认关闭，不影响纯 BM25 检索。
 
 ```bash
 shibei remember "用户偏好 Python 而不是 Go" --category preference --tags tech
@@ -282,31 +305,44 @@ expander:
 ## 架构
 
 ```
-CLI (shibei)
-  └── Shibei (服务层)
-        ├── Context ──→ 答前抽词 + 搜索管线 → context pack
-        ├── Importer ──→ BM25 (FTS5)
-        ├── Searcher ──→ 规则/LLM 改写 → 扩展 → BM25 + 相关推荐
-        ├── Expander ──→ 同义词表 + 模糊匹配
-        ├── Summarizer ──→ LLM 一句话摘要（可选）
-        ├── MemoryStore ──→ SQLite (BM25 召回) + 版本链
-        ├── Manifest ──→ 文件 hash 追踪 (增量导入)
-        ├── Profile ──→ 多场景配置切换
-        ├── Dreamer ──→ 跨文档洞察 + 整理建议（skill 形式）
-        └── Server ──→ MCP JSON-RPC (Agent 接入)
+CLI / MCP / dsh-shibei
+        │
+        ▼
+ShibeiClient  ──►  sidecar (127.0.0.1 HTTP /v1)
+                        │
+                        ▼
+                   Shibei 内核
+                        │
+          ┌─────────────┼──────────────┐
+          ▼             ▼              ▼
+       Context       Searcher      MemoryStore
+          │             │              │
+          └─────────────┴──────► SQLite FTS5
 ```
 
 ## 测试
 
 ```bash
 PYTHONPATH=src pytest tests/ -v
+# DSH 插件渲染单测
+(cd packages/dsh-shibei && node --experimental-strip-types --test src/inject.test.ts)
 ```
+
+检索评测（对比 bm25 / hybrid / rerank 的 recall@k、MRR 与负例误召）：
+
+```bash
+python scripts/eval_retrieval.py                  # 读 ~/.shibei/eval/golden.yaml
+python scripts/eval_retrieval.py --modes bm25,hybrid --min-scores 0.5,0.6
+```
+
+评测集格式见 `eval/golden.example.yaml`。真实查询集建议放在 `~/.shibei/eval/golden.yaml`，不入库。
 
 测试覆盖：配置加载、标签推断、分块逻辑、BM25 索引、记忆召回、轻量关联、增量追踪、Profile 管理、Dreaming 洞察与整理建议。
 
 ## 依赖
 
-- Python ≥ 3.9
+- Python ≥ 3.9（CI 覆盖 3.10–3.12；本地向量后端 fastembed 需 ≥ 3.10）
+- uv（安装脚本与虚拟环境管理）
 - pyyaml
 - python-docx（可选，docx 支持）
 - openpyxl（可选，xlsx 支持）

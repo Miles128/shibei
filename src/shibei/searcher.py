@@ -31,7 +31,7 @@ class BM25Engine(SearchEngine):
         self.cfg = cfg
 
     def search(self, query: str, limit: int, tag: 'str | None' = None) -> dict:
-        from .tokenizer import tokenize_query
+        from .tokenizer import query_terms, tokenize_query
 
         expansion = None
         rewrite_info = None
@@ -79,6 +79,19 @@ class BM25Engine(SearchEngine):
 
         bm25 = BM25Index(str(self.cfg.db_path_expanded / "fts5.db"))
 
+        # 相关性门槛：把同义词/模糊候选归到同一组，组内任一命中即算覆盖
+        expansions = (expansion or {}).get("expansions") or {}
+        fuzzy_map = (expansion or {}).get("fuzzy") or {}
+        groups_map: dict[str, list[str]] = {
+            term: [term] for term in query_terms(effective_query)
+        }
+        for source in (expansions, fuzzy_map):
+            for word, alts in source.items():
+                groups_map.setdefault(word, [word]).extend(alts)
+        coverage_groups = [
+            list(dict.fromkeys(alts)) for alts in groups_map.values()
+        ]
+
         # 轻量向量混合（可选）：开启且 embedding 可用时走三路 RRF
         hybrid_info = None
         query_vec = None
@@ -99,14 +112,27 @@ class BM25Engine(SearchEngine):
                     hybrid_info = {
                         "provider": self.cfg.vector.provider,
                         "model": self.cfg.vector.model,
+                        "min_score": self.cfg.vector.min_score,
+                        "add_new_rows": self.cfg.vector.add_new_rows,
                     }
 
         if query_vec is not None:
             results = bm25.search_hybrid(
-                query, limit, tag, tokenized_query=tokenized_query, query_vec=query_vec
+                query,
+                limit,
+                tag,
+                tokenized_query=tokenized_query,
+                query_vec=query_vec,
+                min_similarity=self.cfg.vector.min_score,
+                add_new_rows=self.cfg.vector.add_new_rows,
+                coverage_groups=coverage_groups,
             )
         else:
-            results = bm25.search(query, limit, tag, tokenized_query=tokenized_query)
+            results = bm25.search(
+                query, limit, tag,
+                tokenized_query=tokenized_query,
+                coverage_groups=coverage_groups,
+            )
 
         result = {
             "query": query,
@@ -156,7 +182,20 @@ class Searcher:
             engine_cls = BM25Engine
 
         engine = engine_cls(self.cfg)
-        result = engine.search(query, limit, tag)
+        fetch_limit = limit
+        if self.cfg.rerank.enabled:
+            fetch_limit = max(limit, self.cfg.rerank.top_k)
+        result = engine.search(query, fetch_limit, tag)
+
+        if self.cfg.rerank.enabled:
+            from .rerank import Reranker
+
+            reranker = Reranker(self.cfg.rerank)
+            if reranker.available():
+                reranked = reranker.rerank(query, result.get("results", []), self.cfg.rerank.top_k)
+                result["results"] = reranked[:limit]
+                result["total"] = len(result["results"])
+                result["rerank"] = {"model": self.cfg.rerank.model, "candidates": len(reranked)}
 
         if include_memories:
             result["memories"] = self._search_memories(query, limit)
@@ -182,6 +221,11 @@ class Searcher:
                 "tags": r.get("tags", ""),
                 "category": r.get("category", ""),
                 "created_at": r.get("created_at", ""),
+                "memory_type": r.get("memory_type", ""),
+                "priority": r.get("priority", 0),
+                "scene_name": r.get("scene_name", ""),
+                "confidence": r.get("confidence", 0.0),
+                "source_message_ids": r.get("source_message_ids", ""),
             }
             for r in rows
         ]

@@ -26,7 +26,7 @@ class RewriteRule:
 class QueryRewriter:
     """基于规则的查询改写器。"""
 
-    def __init__(self, rules: list[RewriteRule]):
+    def __init__(self, rules: list):
         self.rules = [r for r in rules if r.enabled and r.source]
 
     def rewrite(self, query: str) -> dict:

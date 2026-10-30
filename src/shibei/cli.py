@@ -5,8 +5,7 @@ import sys
 import os
 from pathlib import Path
 
-from .config import load_config
-from .services import Shibei
+from .client import ShibeiClient
 from .profile import (
     resolve_config_path, list_profiles, create_profile,
     delete_profile, get_profile_path, profile_exists,
@@ -15,18 +14,28 @@ from .profile import (
 
 
 def cmd_serve(args):
-    """启动 MCP server"""
+    """启动 MCP server（经 sidecar）。"""
     from .server import main as server_main
     if args.debug:
         os.environ["SHIBEI_MCP_DEBUG"] = "1"
-    # Pass resolved config via env so server picks it up
     os.environ["SHIBEI_CONFIG"] = args.resolved_config
     server_main()
 
 
+def cmd_sidecar(args):
+    """前台/后台启动或停止 sidecar。"""
+    from .sidecar import main as sidecar_main
+    argv = ["--config", args.resolved_config]
+    if args.stop:
+        argv.append("--stop")
+    elif args.daemon:
+        argv.append("--daemon")
+    sidecar_main(argv)
+
+
 def cmd_context(args):
     """答前上下文包：从用户消息抽词并召回文档/记忆"""
-    brain = Shibei(args.resolved_config)
+    brain = ShibeiClient(args.resolved_config)
     pack = brain.context(
         message=args.message,
         limit=args.limit,
@@ -55,26 +64,18 @@ def cmd_context(args):
 
 
 def cmd_search(args):
-    brain = Shibei(args.resolved_config)
-
-    # 命令行参数可临时覆盖配置文件中的 expander/rewriter 设置
-    if args.rewrite:
-        brain.config.rewriter.enabled = True
-    if getattr(args, "llm_rewrite", False):
-        brain.config.rewriter.enabled = True
-        brain.config.rewriter.use_llm = True
-    if args.expand:
-        brain.config.expander.enabled = True
-    if args.no_expand:
-        brain.config.expander.enabled = False
-    if args.synonyms:
-        brain.config.expander.synonyms_path = args.synonyms
-        brain.config.expander.enabled = True
-    if args.fuzzy:
-        brain.config.expander.fuzzy = True
-        brain.config.expander.enabled = True
-
-    results = brain.search(args.query, limit=args.limit, tag=args.tag)
+    brain = ShibeiClient(args.resolved_config)
+    expand = True if args.expand else (False if args.no_expand else None)
+    results = brain.search(
+        args.query,
+        limit=args.limit,
+        tag=args.tag,
+        rewrite=True if args.rewrite else None,
+        llm_rewrite=True if getattr(args, "llm_rewrite", False) else None,
+        expand=expand,
+        fuzzy=True if args.fuzzy else None,
+        synonyms=args.synonyms or None,
+    )
 
     # 展示查询改写信息
     rewrite = results.get("rewrite")
@@ -114,7 +115,7 @@ def cmd_search(args):
 
 def cmd_remember(args):
     """写入一条对话记忆"""
-    brain = Shibei(args.resolved_config)
+    brain = ShibeiClient(args.resolved_config)
     result = brain.remember(
         fact=args.fact,
         category=args.category,
@@ -131,7 +132,7 @@ def cmd_remember(args):
 
 def cmd_update_memory(args):
     """更新/压缩一条已有记忆（MCP: shibei_update_memory）"""
-    brain = Shibei(args.resolved_config)
+    brain = ShibeiClient(args.resolved_config)
     ok = brain.update_memory(
         memory_id=args.memory_id,
         fact=args.fact,
@@ -145,7 +146,7 @@ def cmd_update_memory(args):
 
 def cmd_memories_list(args):
     """列出记忆"""
-    brain = Shibei(args.resolved_config)
+    brain = ShibeiClient(args.resolved_config)
     rows = brain.list_memories(limit=args.limit, category=args.category)
 
     if not rows:
@@ -164,7 +165,7 @@ def cmd_memories_list(args):
 
 def cmd_memories_search(args):
     """搜索记忆"""
-    brain = Shibei(args.resolved_config)
+    brain = ShibeiClient(args.resolved_config)
     rows = brain.search_memories(args.query, limit=args.limit, category=args.category)
 
     if not rows:
@@ -183,23 +184,50 @@ def cmd_memories_search(args):
 
 def cmd_memories_cleanup(args):
     """清理已过期的记忆"""
-    brain = Shibei(args.resolved_config)
+    brain = ShibeiClient(args.resolved_config)
     deleted = brain.cleanup_memories()
     print(f"🧹 清理完成，删除 {deleted} 条过期记忆")
 
 
 def cmd_memories_forget(args):
     """删除一条记忆"""
-    brain = Shibei(args.resolved_config)
+    brain = ShibeiClient(args.resolved_config)
     if brain.forget_memory(args.memory_id):
         print(f"✅ 已删除记忆 {args.memory_id}")
     else:
         print(f"❌ 未找到记忆 {args.memory_id}")
 
 
+def cmd_memories_backfill(args):
+    """回填旧记忆的 L1 字段（启发式，零 LLM）。"""
+    from .config import load_config
+    from .memory import MemoryStore
+    from .memory_extract import classify_heuristic
+
+    cfg = load_config(args.resolved_config)
+    store = MemoryStore(cfg.db_path_expanded)
+    limit = args.limit or 100000
+    rows = store.list(limit=limit, include_superseded=True)
+    targets = [r for r in rows if not (r.get("memory_type") or "").strip()]
+
+    if args.dry_run:
+        print(f"[dry-run] 待回填 {len(targets)} 条")
+        for r in targets[:10]:
+            kind = classify_heuristic(r["fact"])["memory_type"]
+            print(f"  {r['id'][:8]} → {kind}: {r['fact'][:50]}")
+        return
+
+    updated = 0
+    for row in targets:
+        fields = classify_heuristic(row["fact"])
+        if store.update_l1(row["id"], **fields):
+            updated += 1
+    print(f"✅ 回填 {updated} 条记忆的 L1 字段（persona/episodic/instruction）")
+
+
 def cmd_persona(args):
     """轻量画像：按类别聚合长期记忆（零 LLM）"""
-    brain = Shibei(args.resolved_config)
+    brain = ShibeiClient(args.resolved_config)
     p = brain.persona(per_category=args.per_category, max_facts=args.max_facts)
 
     if not p.get("total"):
@@ -215,7 +243,7 @@ def cmd_persona(args):
 
 
 def cmd_import(args):
-    brain = Shibei(args.resolved_config)
+    brain = ShibeiClient(args.resolved_config)
     # 支持两种来源指定方式：
     # 1. 位置参数：shibei import ~/notes ~/articles
     # 2. --dirs：shibei import --dirs ~/notes,~/articles
@@ -228,10 +256,10 @@ def cmd_import(args):
     # 文件级进度条；tqdm 未安装时优雅降级
     try:
         from tqdm import tqdm
-    except ImportError:
-        tqdm = None  # type: ignore[misc]
 
-    progress = tqdm(total=None, unit="file", desc="导入文件") if tqdm else None
+        progress = tqdm(total=None, unit="file", desc="导入文件")
+    except ImportError:
+        progress = None
     try:
         def _update(current: int, total: int) -> None:
             if progress is not None:
@@ -257,7 +285,7 @@ def cmd_import(args):
 
 
 def cmd_list(args):
-    brain = Shibei(args.resolved_config)
+    brain = ShibeiClient(args.resolved_config)
     result = brain.list_sources()
     print(f"Collection: {result['count']} sources")
     for s in result["sources"]:
@@ -266,7 +294,7 @@ def cmd_list(args):
 
 def cmd_clean(args):
     """清理源文件已删除的 orphan chunks"""
-    brain = Shibei(args.resolved_config)
+    brain = ShibeiClient(args.resolved_config)
     dirs = None
     if args.paths:
         dirs = list(args.paths)
@@ -288,7 +316,7 @@ def cmd_clean(args):
 
 def cmd_dream(args):
     """执行 dreaming — 默认行为"""
-    brain = Shibei(args.resolved_config)
+    brain = ShibeiClient(args.resolved_config)
     housekeeping = False if getattr(args, "no_housekeeping", False) else {}
     persist = not getattr(args, "no_persist", False)
     result = brain.dream(
@@ -345,7 +373,7 @@ def cmd_dream(args):
 
 def cmd_consolidate(args):
     """整理知识库：发现相似 chunk 候选，可选直接合并"""
-    brain = Shibei(args.resolved_config)
+    brain = ShibeiClient(args.resolved_config)
     result = brain.consolidate(
         threshold=args.threshold,
         min_cluster_size=args.min_size,
@@ -394,7 +422,7 @@ def cmd_apply_consolidation(args):
     """根据外部摘要直接合并相似 chunk（MCP: shibei_apply_consolidation）"""
     import json
 
-    brain = Shibei(args.resolved_config)
+    brain = ShibeiClient(args.resolved_config)
     payload = json.loads(Path(args.input).read_text(encoding="utf-8"))
     # 支持完整的 consolidate 输出 JSON，也支持裸 clusters 列表
     clusters = payload.get("clusters", payload) if isinstance(payload, dict) else payload
@@ -534,8 +562,12 @@ def main():
     p_init.add_argument("--force", action="store_true", help="覆盖已有配置文件")
 
     # serve
-    p = sub.add_parser("serve", help="启动 MCP stdio server")
+    p = sub.add_parser("serve", help="启动 MCP stdio server（经 sidecar）")
     p.add_argument("--debug", action="store_true", help="显示 stderr 日志")
+
+    p_side = sub.add_parser("sidecar", help="启动或停止拾贝 sidecar")
+    p_side.add_argument("--daemon", action="store_true", help="后台运行")
+    p_side.add_argument("--stop", action="store_true", help="停止已有 sidecar")
 
     # context
     p_ctx = sub.add_parser("context", help="答前上下文包（从用户消息召回文档+记忆）")
@@ -629,6 +661,12 @@ def main():
     p_memories_forget = p_memories_sub.add_parser("forget", help="删除一条记忆")
     p_memories_forget.add_argument("memory_id", help="记忆 ID（可只给前 8 位，自动匹配）")
 
+    p_memories_backfill = p_memories_sub.add_parser(
+        "backfill", help="回填旧记忆的 L1 字段（启发式，零 LLM）"
+    )
+    p_memories_backfill.add_argument("--limit", type=int, default=0, help="最多处理条数（0=全部）")
+    p_memories_backfill.add_argument("--dry-run", action="store_true", help="只预览不改库")
+
     # consolidate
     p_consolidate = sub.add_parser("consolidate", help="整理知识库：合并相似 chunk")
     p_consolidate.add_argument("--threshold", type=float, default=0.6,
@@ -708,6 +746,7 @@ def main():
             "search": cmd_memories_search,
             "cleanup": cmd_memories_cleanup,
             "forget": cmd_memories_forget,
+            "backfill": cmd_memories_backfill,
         }.get(memories_cmd, lambda a: p_memories.print_help())(args)
         return
 
@@ -718,6 +757,7 @@ def main():
 
     {
         "serve": cmd_serve,
+        "sidecar": cmd_sidecar,
         "context": cmd_context,
         "search": cmd_search,
         "import": cmd_import,

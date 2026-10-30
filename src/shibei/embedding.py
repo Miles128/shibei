@@ -14,9 +14,11 @@ import logging
 import os
 import urllib.error
 import urllib.request
-from typing import Optional
+from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
+
+_MODEL_CACHE: dict[str, Any] = {}
 
 
 def _api_key() -> str:
@@ -39,7 +41,7 @@ class Embedder:
         self.base_url = base_url
         self.timeout = timeout
         self.batch_size = max(1, batch_size)
-        self._local_model = None  # fastembed 延迟加载
+        self._local_model: Any = None  # fastembed 延迟加载
 
     # ---------- 可用性 ----------
 
@@ -53,18 +55,6 @@ class Embedder:
                 return False
         # api 后端
         return bool(_api_key())
-
-    def dim(self) -> int:
-        """返回向量维度；不可用时返回 0。"""
-        if self.provider == "local":
-            try:
-                from fastembed import TextEmbedding
-                m = TextEmbedding(model_name=self.model)
-                return int(m.model_output_dim)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("获取本地模型维度失败: %s", exc)
-                return 0
-        return 0  # api 后端维度由服务端决定，调用方按返回向量长度自适应
 
     # ---------- 核心 ----------
 
@@ -92,11 +82,14 @@ class Embedder:
     def _embed_local(self, texts: list[str]) -> list[list[float]]:
         from fastembed import TextEmbedding
 
-        if self._local_model is None:
-            self._local_model = TextEmbedding(model_name=self.model)
+        model = self._local_model or _MODEL_CACHE.get(self.model)
+        if model is None:
+            model = TextEmbedding(model_name=self.model)
+            _MODEL_CACHE[self.model] = model
+        self._local_model = model
         vectors = []
         for batch in _batches(texts, self.batch_size):
-            for v in self._local_model.embed(batch):
+            for v in model.embed(batch):
                 vectors.append([float(x) for x in v])
         return vectors
 

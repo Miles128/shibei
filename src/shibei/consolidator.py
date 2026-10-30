@@ -234,8 +234,8 @@ def apply_consolidation(db_path: Path, clusters: list[dict]) -> dict:
     from .bm25 import BM25Index
 
     bm25 = BM25Index(str(db_path / "fts5.db"))
-    rowids_to_delete = []
-    new_items = []
+    rowids_to_delete: list[int] = []
+    new_items: list[tuple[str, str, str, str, str, str, str]] = []
     timestamp = datetime.now().strftime("%Y%m%dT%H%M%S")
     invalid = 0
 
