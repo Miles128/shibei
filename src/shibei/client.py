@@ -63,8 +63,8 @@ def _spawn(config_path: str) -> None:
     )
 
 
-def ensure_sidecar(config_path: str, timeout: float = 5.0) -> dict:
-    """复用已有 sidecar，否则拉起 daemon。"""
+def ensure_sidecar(config_path: str, timeout: float = 20.0) -> dict:
+    """复用已有 sidecar，否则拉起 daemon。冷启动含模型/分词初始化，留足 20s。"""
     config_path = str(Path(config_path).expanduser().resolve())
     run_dir = run_dir_for(config_path)
     run_dir.mkdir(parents=True, exist_ok=True)

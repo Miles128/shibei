@@ -34,7 +34,16 @@ from .client import ShibeiClient
 
 def _init_brain():
     config_path = os.environ.get("SHIBEI_CONFIG", "config.yaml")
-    return ShibeiClient(config_path)
+    if os.environ.get("SHIBEI_NO_SIDECAR", "").lower() in {"1", "true", "yes"}:
+        from .services import Shibei
+        return Shibei(config_path)
+    try:
+        return ShibeiClient(config_path)
+    except Exception as exc:  # noqa: BLE001
+        # 部分宿主（如 Claude Code）会杀掉 MCP 拉起的后台 daemon，退化为进程内内核
+        print(f"[shibei] sidecar unavailable, using in-process brain: {exc}", file=sys.stderr)
+        from .services import Shibei
+        return Shibei(config_path)
 
 
 def _handle_search(brain, args):
