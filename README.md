@@ -341,7 +341,7 @@ python scripts/eval_retrieval.py --modes bm25,hybrid --min-scores 0.5,0.6
 
 ## 依赖
 
-- Python ≥ 3.9（本地向量后端 fastembed 需 ≥ 3.10）
+- Python ≥ 3.9（CI 覆盖 3.10–3.12；本地向量后端 fastembed 需 ≥ 3.10）
 - uv（安装脚本与虚拟环境管理）
 - pyyaml
 - python-docx（可选，docx 支持）
