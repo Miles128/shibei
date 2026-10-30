@@ -100,6 +100,8 @@ vector:
   model: "BAAI/bge-small-zh-v1.5"  # 本地模型名或 API 侧 embedding 模型名
   dim: 512                         # 向量维度（bge-small-zh-v1.5 = 512）
   batch_size: 16                   # 批量 embedding 大小
+  min_score: 0.5                   # 余弦相似度下限；低于此值不参与融合
+  add_new_rows: false              # false=向量只重排 BM25 已命中项，避免零命中时返回纯向量噪声
 
 # === MCP 响应上下文卸载（对标 TencentDB 短期上下文治理） ===
 # shibei_context / shibei_search 结果超过 max_bytes 时，完整 JSON 写入

@@ -7,7 +7,8 @@
 ## 30 秒上手
 
 ```bash
-./setup.sh                      # 安装依赖
+./setup.sh                      # 安装依赖（需要 uv，缺省安装到 .venv）
+source .venv/bin/activate
 vim config.yaml                 # 改 sources 为你的文档目录
 shibei import                   # 增量导入
 shibei search "关键词"           # 搜索
@@ -144,7 +145,9 @@ shibei memories backfill --dry-run   # 预览
 shibei memories backfill             # 启发式回填（零 LLM）
 ```
 
-检索可选开 cross-encoder 重排（`rerank.enabled`）：初筛 top_k 后用本地 `BAAI/bge-reranker-base` 重新打分。默认关闭，建议先用评测集验证再开。
+检索可选开 cross-encoder 重排（`rerank.enabled`）：初筛 top_k 后用本地 `BAAI/bge-reranker-base` 重新打分。默认关闭，建议先用 `scripts/eval_retrieval.py` 在本地评测集上验证再开。
+
+BM25 结果会按「查询核心词覆盖率」过滤：只命中泛词（如"怎么/哪个/牌子"）的结果直接丢弃。向量默认只重排 BM25 已命中项（`vector.add_new_rows: false`），避免零命中时返回纯向量噪声；实测开启 `add_new_rows` 需把 `min_score` 提到 0.6 才不会引入负例误召。
 
 LLM 端点用 `llm.preset` 选择：`deepseek` / `openai` / `ollama` / `custom`（custom 用显式 `base_url` + `model`）。默认关闭，不影响纯 BM25 检索。
 
@@ -325,11 +328,21 @@ PYTHONPATH=src pytest tests/ -v
 (cd packages/dsh-shibei && node --experimental-strip-types --test src/inject.test.ts)
 ```
 
+检索评测（对比 bm25 / hybrid / rerank 的 recall@k、MRR 与负例误召）：
+
+```bash
+python scripts/eval_retrieval.py                  # 读 ~/.shibei/eval/golden.yaml
+python scripts/eval_retrieval.py --modes bm25,hybrid --min-scores 0.5,0.6
+```
+
+评测集格式见 `eval/golden.example.yaml`。真实查询集建议放在 `~/.shibei/eval/golden.yaml`，不入库。
+
 测试覆盖：配置加载、标签推断、分块逻辑、BM25 索引、记忆召回、轻量关联、增量追踪、Profile 管理、Dreaming 洞察与整理建议。
 
 ## 依赖
 
-- Python ≥ 3.9
+- Python ≥ 3.9（本地向量后端 fastembed 需 ≥ 3.10）
+- uv（安装脚本与虚拟环境管理）
 - pyyaml
 - python-docx（可选，docx 支持）
 - openpyxl（可选，xlsx 支持）

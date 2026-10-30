@@ -127,6 +127,8 @@ class VectorConfig:
     model: str = "BAAI/bge-small-zh-v1.5"       # 本地模型名或 API 侧的 embedding 模型名
     dim: int = 512                              # 向量维度（bge-small-zh-v1.5 = 512）
     batch_size: int = 16                        # 批量 embedding 大小
+    min_score: float = 0.5                      # 余弦相似度下限；同领域中文语料通常 0.6+，0.5 只滤掉明显无关
+    add_new_rows: bool = False                  # 是否允许向量引入 BM25 未命中的文档（默认只重排已命中项）
 
 
 @dataclass

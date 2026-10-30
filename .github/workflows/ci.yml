@@ -26,6 +26,10 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[dev,all]"
 
+      - name: Install vector extra (fastembed requires Python 3.10+)
+        if: matrix.python-version != '3.9'
+        run: pip install -e ".[vector]"
+
       - name: Type check with mypy
         run: python -m mypy src/shibei tests --ignore-missing-imports
 
