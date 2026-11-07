@@ -15,7 +15,12 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 from .config import load_config
-from .sidecar import read_run_file, run_dir_for, stop_sidecar
+from .sidecar import (
+    read_run_file,
+    read_shared_run_file,
+    run_dir_for,
+    stop_sidecar,
+)
 
 
 class SidecarError(RuntimeError):
@@ -63,9 +68,34 @@ def _spawn(config_path: str) -> None:
     )
 
 
+def _shared_info(config_path: str) -> dict | None:
+    """若全局多库 daemon 正在运行且包含这个 config，返回它的连接信息。"""
+    if os.environ.get("SHIBEI_NO_SHARED"):
+        return None
+    info = read_shared_run_file()
+    if not info:
+        return None
+    try:
+        status, body = _request(
+            info["base_url"], info["token"], "GET", "/v1/brains", timeout=1.5
+        )
+    except SidecarError:
+        return None
+    if status != 200 or not isinstance(body, dict):
+        return None
+    target = str(Path(config_path).expanduser().resolve())
+    for entry in body.get("brains") or []:
+        if str(Path(str(entry.get("config_path", ""))).resolve()) == target:
+            return {**info, "brain": entry.get("name"), "brains": body.get("brains")}
+    return None
+
+
 def ensure_sidecar(config_path: str, timeout: float = 20.0) -> dict:
     """复用已有 sidecar，否则拉起 daemon。冷启动含模型/分词初始化，留足 20s。"""
     config_path = str(Path(config_path).expanduser().resolve())
+    shared = _shared_info(config_path)
+    if shared is not None:
+        return shared
     run_dir = run_dir_for(config_path)
     run_dir.mkdir(parents=True, exist_ok=True)
     lock_path = run_dir / "sidecar.lock"
@@ -124,29 +154,62 @@ def _request(
 class ShibeiClient:
     """与 Shibei 内核同名的进程外 API。"""
 
-    def __init__(self, config_path: str = "config.yaml"):
+    def __init__(
+        self,
+        config_path: str = "config.yaml",
+        token: 'str | None' = None,
+    ):
         self.config_path = str(Path(config_path).expanduser().resolve())
         self.config = load_config(config_path)
         info = ensure_sidecar(self.config_path)
         self._base = info["base_url"]
-        self._token = info["token"]
+        # 允许下游程序用受限 token 覆盖 daemon 的 bootstrap token
+        self._token = token or os.environ.get("SHIBEI_TOKEN") or info["token"]
+        self.brain = info.get("brain")
 
     def _get(self, path: str, query: dict | None = None, timeout: float = 2.0):
+        params = dict(query or {})
+        if self.brain:
+            params.setdefault("brain", self.brain)
         qs = ""
-        if query:
-            filtered = {k: v for k, v in query.items() if v is not None}
-            if filtered:
-                qs = "?" + urlencode(filtered)
+        filtered = {k: v for k, v in params.items() if v is not None}
+        if filtered:
+            qs = "?" + urlencode(filtered)
         _, payload = _request(
             self._base, self._token, "GET", path + qs, timeout=timeout
         )
         return payload
 
     def _post(self, path: str, body: dict, timeout: float = 2.0):
+        payload_body = dict(body)
+        if self.brain:
+            payload_body.setdefault("brain", self.brain)
         _, payload = _request(
-            self._base, self._token, "POST", path, body=body, timeout=timeout
+            self._base, self._token, "POST", path, body=payload_body, timeout=timeout
         )
         return payload
+
+    def brains(self, stats: bool = True) -> dict:
+        """列出当前 daemon 可用的 brain。"""
+        return self._get("/v1/brains", {"stats": "1" if stats else "0"})
+
+    def register_brain(
+        self,
+        name: str,
+        config_path: 'str | None' = None,
+        create: bool = False,
+        description: str = "",
+    ) -> dict:
+        """运行时注册一个库；create=True 时自动生成配置。"""
+        body: dict[str, Any] = {"name": name, "description": description}
+        if config_path:
+            body["config_path"] = config_path
+        if create:
+            body["create"] = True
+        return self._post("/v1/brains", body, timeout=10)
+
+    def remove_brain(self, name: str) -> dict:
+        return self._post("/v1/brains/remove", {"name": name}, timeout=10)
 
     def search(
         self,
@@ -178,6 +241,60 @@ class ShibeiClient:
         if synonyms is not None:
             body["synonyms"] = synonyms
         return self._post("/v1/search", body)
+
+    def recall(
+        self,
+        query: str | None = None,
+        message: str = "",
+        limit: int = 5,
+        tag: str | None = None,
+        mode: str = "raw",
+        memories: bool = True,
+        persona: bool = False,
+        write_hints: bool = False,
+        trace: bool = False,
+        full_text: bool = False,
+        rewrite: bool | None = None,
+        llm_rewrite: bool | None = None,
+        expand: bool | None = None,
+        fuzzy: bool | None = None,
+        synonyms: str | None = None,
+        vector: bool | None = None,
+        rerank: bool | None = None,
+        brain: str | None = None,
+        timeout: float = 60.0,
+    ) -> dict:
+        """统一召回入口（默认超时放大到 60s：rerank/LLM 改写会比普通搜索慢）。
+
+        brain: 指定库名；``"*"`` 表示联邦召回所有库；缺省用客户端当前库。
+        """
+        body: dict[str, Any] = {
+            "query": query,
+            "message": message,
+            "limit": limit,
+            "mode": mode,
+            "memories": memories,
+            "persona": persona,
+            "write_hints": write_hints,
+            "trace": trace,
+            "full_text": full_text,
+        }
+        if brain is not None:
+            body["brain"] = brain
+        if tag is not None:
+            body["tag"] = tag
+        for key, value in (
+            ("rewrite", rewrite),
+            ("llm_rewrite", llm_rewrite),
+            ("expand", expand),
+            ("fuzzy", fuzzy),
+            ("synonyms", synonyms),
+            ("vector", vector),
+            ("rerank", rerank),
+        ):
+            if value is not None:
+                body[key] = value
+        return self._post("/v1/recall", body, timeout=timeout)
 
     def context(
         self,
@@ -213,6 +330,18 @@ class ShibeiClient:
 
     def list_sources(self, limit: int = 0, offset: int = 0) -> dict:
         return self._get("/v1/sources", {"limit": limit, "offset": offset})
+
+    def list_chunks(
+        self,
+        limit: int = 200,
+        offset: int = 0,
+        source: str | None = None,
+        tag: str | None = None,
+    ) -> dict:
+        return self._get(
+            "/v1/chunks",
+            {"limit": limit, "offset": offset, "source": source, "tag": tag},
+        )
 
     def clean_orphans(
         self,
