@@ -23,9 +23,13 @@ shibei serve                    # 启动 MCP server
 |------|------|------|
 | Sidecar | `shibei sidecar --daemon` | 常驻内核 |
 | CLI | `shibei context/search/import/list/remember` | 人 |
+| TUI | `shibei ui` | 人（召回诊断） |
 | MCP | `shibei serve` | Cursor / Claude 等 |
 | DSH 插件 | `packages/dsh-shibei` | DeepSeek Harness |
 | Python | `from shibei.client import ShibeiClient` | 开发者（进程外） |
+
+所有入口共用同一个召回内核 `/v1/recall`（`src/shibei/recall.py`），
+`mode=raw` 拿原始结果、`mode=pack` 拿答前上下文包、`trace=true` 附带阶段耗时与命中路由。
 
 `from shibei import Shibei` 仍是内核类，仅 sidecar 内部与单测使用。
 
@@ -149,6 +153,13 @@ shibei memories backfill             # 启发式回填（零 LLM）
 
 BM25 结果会按「查询核心词覆盖率」过滤：只命中泛词（如"怎么/哪个/牌子"）的结果直接丢弃。向量默认只重排 BM25 已命中项（`vector.add_new_rows: false`），避免零命中时返回纯向量噪声；实测开启 `add_new_rows` 需把 `min_score` 提到 0.6 才不会引入负例误召。
 
+向量后端可选 `vector.backend`：
+
+- `exact`（默认）：全量或候选集精确余弦，零额外依赖
+- `hnsw`：usearch HNSW，适合 1 万+ chunk；索引文件为 `<db_path>/vectors.usearch`，缺失/损坏/维度不匹配时自动从 `chunk_embeddings` 重建，usearch 不可用时自动回退 `exact`
+
+`add_new_rows: false` 时只对 BM25 候选做精确余弦，不走 HNSW；要让 HNSW 参与全库召回，需要同时开启 `add_new_rows: true`。
+
 LLM 端点用 `llm.preset` 选择：`deepseek` / `openai` / `ollama` / `custom`（custom 用显式 `base_url` + `model`）。默认关闭，不影响纯 BM25 检索。
 
 ```bash
@@ -224,6 +235,128 @@ shibei dream
   - 清理过期记忆（自动执行）
   - 识别可压缩的旧记忆候选（由 Agent 用 LLM 判断后执行）
   - 识别相似的 chunk 候选（由 Agent 用 LLM 生成摘要后执行）
+
+## 召回诊断台（TUI）
+
+`shibei ui` 打开终端里的召回工作台：左边结果，右边阶段耗时与 chunk 详情。
+
+```bash
+uv pip install "shibei[tui]"    # 只需一次，textual 是可选依赖
+shibei ui                       # 自动复用/拉起 sidecar
+```
+
+| 按键 | 动作 |
+|------|------|
+| `回车` | 执行召回 |
+| `1`–`6` | 切换 rewrite / expand / fuzzy / vector / rerank / memories（三态：`·` 跟随配置 / `✓` 强制开 / `✗` 强制关） |
+| `ctrl+r` | 用当前开关重跑 |
+| `↑↓` | 移动结果，右侧实时刷新 trace 与详情 |
+| `o` | 用 `$EDITOR` 打开当前文件 |
+| `a` / `f2` | 打开「全部片段」：按 rowid 浏览库里所有 chunk（`n`/`p` 翻页，`esc` 返回） |
+| `b` | 切换库（多库 daemon 下生效） |
+| `/` | 回到输入框 |
+| `esc` | 离开输入框，进入结果表 |
+| `q` | 退出 |
+
+每个开关切换后自动重跑，便于做 A/B 对照。trace 面板会给出：
+
+- 各阶段耗时（rewrite / expand / retrieve / rerank / memories）
+- 候选数与被丢弃数（`coverage_gate` 是相关性门槛拦下的，`limit` 是被截断的）
+- 每条结果的命中路由与各路由排名（`content#1 · summary#3`）
+- 降级提示（向量/重排/LLM 改写要了但没生效）
+
+按 `a` 进入「全部片段」：直接按 rowid 分页浏览库里已有的所有 chunk（每页 200 条），
+用来核对切分是否合理、内容有没有进库。底层是 `GET /v1/chunks?limit=&offset=&source=&tag=`，
+不经过 BM25 / 向量排序。
+
+## 多库：一套接口服务多个知识库
+
+默认一个 config = 一个库 = 一个 sidecar。要让一个接口服务多个项目，注册多个库后起多库 daemon：
+
+```bash
+shibei brains add work ~/work/shibei.yaml --description 工作
+shibei brains add life ~/.shibei/profiles/life.yaml
+shibei brains list
+
+shibei sidecar --daemon --all       # 一个进程、一个端口、多个库
+```
+
+注册表在 `~/.shibei/brains.yaml`（可用 `SHIBEI_BRAINS` 指定别的路径，`SHIBEI_HOME` 改根目录）。
+往注册表里加库不需要重启 daemon（按文件 mtime 热加载）。
+
+```bash
+shibei search "Redis" --brain work                      # 指定库
+shibei --config ~/work/shibei.yaml search "Redis"       # 自动路由到 work
+shibei ui                                               # TUI 里按 b 切换库
+```
+
+HTTP 侧用 `brain` 参数：
+
+```jsonc
+POST /v1/recall
+{"brain": "work", "query": "Redis"}                    // 单库
+{"brain": "*",    "query": "Redis"}                    // 联邦：所有库
+{"brains": ["work", "life"], "query": "Redis"}         // 指定子集
+```
+
+`GET /v1/brains` 返回每个库的 config 路径、db 路径和 chunk 数。
+写操作（`/v1/remember`、`/v1/import` 等）只作用于指定的库，写锁也是按库隔离的。
+
+**联邦召回按名次融合，不比较分数。** BM25 的 IDF 依赖各自语料，两个库的 score 不可比，
+所以用 RRF：`1 / (60 + rank)` 累加。结果带 `brain` / `brains` / `fused_score`，
+同一文件同一内容被多个库命中时会合并成一条并在 `brains` 里列出。
+
+### 按库授权
+
+一个 daemon 服务多个程序时，可以给每个下游程序发一个受限 token：
+
+```bash
+shibei tokens add cursor --read work --write work   # 读写 work
+shibei tokens add robot  --read work,life           # 只读两个库（默认 write 为空）
+shibei tokens list                                  # 脱敏显示
+shibei tokens revoke robot
+```
+
+token 存在 `~/.shibei/tokens.yaml`（0600），带 mtime 热加载，吊销立即生效。
+下游程序：
+
+```bash
+export SHIBEI_TOKEN=<token>
+shibei search "Redis" --brain work
+```
+
+```python
+ShibeiClient("~/work/shibei.yaml", token="<token>")
+```
+
+规则：
+
+| 情况 | 结果 |
+|---|---|
+| daemon 的 bootstrap token（在 `run/sidecar.json`） | admin，读写全部 |
+| `read` / `write` 里含 `"*"` | 全部库 |
+| 请求的库不在授权列表 | 403 |
+| 读 token 调写接口 | 403 |
+| 未知 token | 401 |
+| `GET /v1/brains` | 只返回有读权限的库 |
+
+### 运行时注册库
+
+程序可以自己建库，不需要改文件：
+
+```python
+client.register_brain("scratch", create=True, description="临时库")
+client.brains()
+client.remove_brain("scratch")
+```
+
+```jsonc
+POST /v1/brains         {"name": "scratch", "create": true}
+POST /v1/brains/remove  {"name": "scratch"}
+```
+
+`create=true` 会在 `~/.shibei/brains/<name>.yaml` 生成配置、`~/.shibei/db/<name>` 建目录并注册。
+需要对该库名有写权限。删除只移除注册项，**不删数据**。
 
 ## MCP 接入（给 Agent）
 
@@ -332,7 +465,7 @@ PYTHONPATH=src pytest tests/ -v
 
 ```bash
 python scripts/eval_retrieval.py                  # 读 ~/.shibei/eval/golden.yaml
-python scripts/eval_retrieval.py --modes bm25,hybrid --min-scores 0.5,0.6
+python scripts/eval_retrieval.py --modes bm25,hybrid,hnsw --min-scores 0.5,0.6
 ```
 
 评测集格式见 `eval/golden.example.yaml`。真实查询集建议放在 `~/.shibei/eval/golden.yaml`，不入库。
@@ -347,6 +480,7 @@ python scripts/eval_retrieval.py --modes bm25,hybrid --min-scores 0.5,0.6
 - python-docx（可选，docx 支持）
 - openpyxl（可选，xlsx 支持）
 - jieba（可选，中文分词增强）
+- fastembed / usearch（可选，向量 hybrid / HNSW 索引）
 
 ## License
 
