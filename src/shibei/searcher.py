@@ -4,12 +4,22 @@
 """
 
 import logging
+import time
 from abc import ABC, abstractmethod
 
 from .config import Config
 from .bm25 import BM25Index
 
 logger = logging.getLogger(__name__)
+
+
+def _stage(trace: 'list[dict] | None', name: str, started: float, **detail) -> None:
+    """记录一个召回阶段的耗时（trace 为 None 时零开销）。"""
+    if trace is None:
+        return
+    entry: dict = {"name": name, "ms": round((time.perf_counter() - started) * 1000, 1)}
+    entry.update(detail)
+    trace.append(entry)
 
 
 class SearchEngine(ABC):
@@ -19,7 +29,13 @@ class SearchEngine(ABC):
         self.cfg = cfg
 
     @abstractmethod
-    def search(self, query: str, limit: int, tag: 'str | None' = None) -> dict:
+    def search(
+        self,
+        query: str,
+        limit: int,
+        tag: 'str | None' = None,
+        trace: 'list[dict] | None' = None,
+    ) -> dict:
         """执行搜索，返回 {"query": ..., "total": ..., "results": [...]}。"""
         ...
 
@@ -30,13 +46,20 @@ class BM25Engine(SearchEngine):
     def __init__(self, cfg: Config):
         self.cfg = cfg
 
-    def search(self, query: str, limit: int, tag: 'str | None' = None) -> dict:
+    def search(
+        self,
+        query: str,
+        limit: int,
+        tag: 'str | None' = None,
+        trace: 'list[dict] | None' = None,
+    ) -> dict:
         from .tokenizer import query_terms, tokenize_query
 
         expansion = None
         rewrite_info = None
         llm_rewrite_info = None
         effective_query = query
+        started = time.perf_counter()
 
         if self.cfg.rewriter.enabled:
             from .rewriter import QueryRewriter
@@ -61,8 +84,16 @@ class BM25Engine(SearchEngine):
                         effective_query,
                     )
 
+        _stage(
+            trace, "rewrite", started,
+            enabled=self.cfg.rewriter.enabled,
+            rewritten=effective_query,
+            llm=bool((llm_rewrite_info or {}).get("applied")),
+        )
+
         tokenized_query = tokenize_query(effective_query)
 
+        expand_started = time.perf_counter()
         if self.cfg.expander.enabled:
             from .expander import QueryExpander
             expander = QueryExpander(
@@ -76,8 +107,19 @@ class BM25Engine(SearchEngine):
             if expansion["expanded"]:
                 tokenized_query = tokenize_query(expansion["expanded"])
                 logger.debug("扩展查询: %s -> %s", effective_query, expansion["expanded"])
+        _stage(
+            trace, "expand", expand_started,
+            enabled=self.cfg.expander.enabled,
+            terms=len((expansion or {}).get("expansions") or {}),
+            fuzzy=len((expansion or {}).get("fuzzy") or {}),
+        )
 
-        bm25 = BM25Index(str(self.cfg.db_path_expanded / "fts5.db"))
+        retrieve_started = time.perf_counter()
+        stats: 'dict | None' = {} if trace is not None else None
+        bm25 = BM25Index(
+            str(self.cfg.db_path_expanded / "fts5.db"),
+            vector_config=self.cfg.vector,
+        )
 
         # 相关性门槛：把同义词/模糊候选归到同一组，组内任一命中即算覆盖
         expansions = (expansion or {}).get("expansions") or {}
@@ -126,13 +168,18 @@ class BM25Engine(SearchEngine):
                 min_similarity=self.cfg.vector.min_score,
                 add_new_rows=self.cfg.vector.add_new_rows,
                 coverage_groups=coverage_groups,
+                stats=stats,
+                with_why=trace is not None,
             )
         else:
             results = bm25.search(
                 query, limit, tag,
                 tokenized_query=tokenized_query,
                 coverage_groups=coverage_groups,
+                stats=stats,
+                with_why=trace is not None,
             )
+        _stage(trace, "retrieve", retrieve_started, **(stats or {}))
 
         result = {
             "query": query,
@@ -174,6 +221,7 @@ class Searcher:
         limit: int = 5,
         tag: 'str | None' = None,
         include_memories: bool = True,
+        trace: 'list[dict] | None' = None,
     ) -> dict:
         engine_name = self.cfg.storage.search_engine
         engine_cls = _ENGINES.get(engine_name)
@@ -185,23 +233,33 @@ class Searcher:
         fetch_limit = limit
         if self.cfg.rerank.enabled:
             fetch_limit = max(limit, self.cfg.rerank.top_k)
-        result = engine.search(query, fetch_limit, tag)
+        if trace is None:
+            # 兼容未声明 trace 参数的自定义引擎
+            result = engine.search(query, fetch_limit, tag)
+        else:
+            result = engine.search(query, fetch_limit, tag, trace=trace)
 
         if self.cfg.rerank.enabled:
             from .rerank import Reranker
 
             reranker = Reranker(self.cfg.rerank)
             if reranker.available():
+                started = time.perf_counter()
                 reranked = reranker.rerank(query, result.get("results", []), self.cfg.rerank.top_k)
                 result["results"] = reranked[:limit]
                 result["total"] = len(result["results"])
                 result["rerank"] = {"model": self.cfg.rerank.model, "candidates": len(reranked)}
+                _stage(trace, "rerank", started, candidates=len(reranked))
 
         if include_memories:
+            started = time.perf_counter()
             result["memories"] = self._search_memories(query, limit)
+            _stage(trace, "memories", started, hits=len(result["memories"]))
 
         if self.cfg.related.enabled:
+            started = time.perf_counter()
             result["related"] = self._find_related(result.get("results", []))
+            _stage(trace, "related", started, hits=len(result["related"]))
         else:
             result["related"] = []
         return result

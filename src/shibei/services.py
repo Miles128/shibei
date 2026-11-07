@@ -33,33 +33,66 @@ class Shibei:
         fuzzy: 'bool | None' = None,
         synonyms: 'str | None' = None,
     ) -> dict:
-        from copy import deepcopy
+        """原始检索结果（不压缩）。统一走 recall 内核。"""
+        return self.recall(
+            query=query,
+            limit=limit,
+            tag=tag,
+            mode="raw",
+            memories=include_memories,
+            rewrite=rewrite,
+            llm_rewrite=llm_rewrite,
+            expand=expand,
+            fuzzy=fuzzy,
+            synonyms=synonyms,
+        )
 
-        from .searcher import Searcher
+    def recall(
+        self,
+        query: 'str | None' = None,
+        message: str = "",
+        limit: int = 5,
+        tag: 'str | None' = None,
+        mode: str = "raw",
+        memories: bool = True,
+        persona: bool = False,
+        write_hints: bool = False,
+        trace: bool = False,
+        full_text: bool = False,
+        rewrite: 'bool | None' = None,
+        llm_rewrite: 'bool | None' = None,
+        expand: 'bool | None' = None,
+        fuzzy: 'bool | None' = None,
+        synonyms: 'str | None' = None,
+        vector: 'bool | None' = None,
+        rerank: 'bool | None' = None,
+    ) -> dict:
+        """统一召回：CLI / MCP / DSH / HTTP / TUI 共用的单一口径。
 
-        cfg = self.config
-        if any(
-            x is not None
-            for x in (rewrite, llm_rewrite, expand, fuzzy, synonyms)
-        ):
-            cfg = deepcopy(self.config)
-            if rewrite:
-                cfg.rewriter.enabled = True
-            if llm_rewrite:
-                cfg.rewriter.enabled = True
-                cfg.rewriter.use_llm = True
-            if expand is True:
-                cfg.expander.enabled = True
-            elif expand is False:
-                cfg.expander.enabled = False
-            if synonyms:
-                cfg.expander.synonyms_path = synonyms
-                cfg.expander.enabled = True
-            if fuzzy:
-                cfg.expander.fuzzy = True
-                cfg.expander.enabled = True
-        return Searcher(cfg).search(
-            query, limit, tag, include_memories=include_memories
+        mode="raw" 返回未压缩结果；mode="pack" 返回答前上下文包（含 persona）。
+        trace=True 时额外返回阶段耗时、命中路由与丢弃统计。
+        """
+        from .recall import recall as _recall
+
+        return _recall(
+            self.config,
+            query=query,
+            message=message,
+            limit=limit,
+            tag=tag,
+            mode=mode,
+            memories=memories,
+            persona=persona,
+            write_hints=write_hints,
+            trace=trace,
+            full_text=full_text,
+            rewrite=rewrite,
+            llm_rewrite=llm_rewrite,
+            expand=expand,
+            fuzzy=fuzzy,
+            synonyms=synonyms,
+            vector=vector,
+            rerank=rerank,
         )
 
     def context(
@@ -95,6 +128,31 @@ class Shibei:
     def list_sources(self, limit: int = 0, offset: int = 0) -> dict:
         from .importer import list_sources
         return list_sources(self.config, limit=limit, offset=offset)
+
+    def list_chunks(
+        self,
+        limit: int = 200,
+        offset: int = 0,
+        source: 'str | None' = None,
+        tag: 'str | None' = None,
+    ) -> dict:
+        """分页列出库里已有的 chunk（不走向量/BM25，按 rowid 顺序）。"""
+        from .bm25 import BM25Index
+
+        index = BM25Index(
+            str(self.config.db_path_expanded / "fts5.db"),
+            vector_config=self.config.vector,
+        )
+        return {
+            "total": index.count_chunks(source=source, tag=tag),
+            "limit": limit,
+            "offset": offset,
+            "source": source,
+            "tag": tag,
+            "items": index.list_chunks(
+                limit=limit, offset=offset, source=source, tag=tag
+            ),
+        }
 
     def clean_orphans(
         self,

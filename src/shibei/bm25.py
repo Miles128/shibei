@@ -7,11 +7,18 @@
 FTS5 存分词语料做索引，原文存独立表。
 """
 
+import logging
 import sqlite3
 import struct
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from .tokenizer import query_coverage_groups, tokenize_query, tokenize_text
+
+if TYPE_CHECKING:
+    from .config import VectorConfig
+
+logger = logging.getLogger(__name__)
 
 
 DB_NAME = "fts5.db"
@@ -32,8 +39,11 @@ class BM25Index:
     架构：chunks 表存原文，chunks_fts 存分词索引（content='' 纯索引模式）。
     """
 
-    def __init__(self, db_path: str):
+    def __init__(self, db_path: str, vector_config: "VectorConfig | None" = None):
         self.db_path = db_path
+        self.vector_config = vector_config
+        self._hnsw = None
+        self._hnsw_unavailable = False
         self._init_db()
 
     def _init_db(self):
@@ -116,6 +126,7 @@ class BM25Index:
             conn.execute(f"INSERT INTO {FTS_TABLE}({FTS_TABLE}) VALUES('delete-all')")
             conn.execute(f"DELETE FROM {EMB_TABLE}")
             conn.commit()
+        self._invalidate_hnsw()
 
     def add_batch(self, items: list) -> list[int]:
         """批量添加 chunks，返回新插入的 rowid 列表（供向量索引联动）。
@@ -154,6 +165,102 @@ class BM25Index:
 
     # ---------- 向量混合检索（可选，PRD 10.3） ----------
 
+    def _get_hnsw(self):
+        """返回共享 HNSW 索引；未启用或依赖缺失时返回 None。"""
+        cfg = self.vector_config
+        if (
+            cfg is None
+            or not cfg.enabled
+            or cfg.backend != "hnsw"
+            or not cfg.add_new_rows
+        ):
+            return None
+        if self._hnsw_unavailable:
+            return None
+        if self._hnsw is None:
+            from .vector_index import get_shared_hnsw_index, usearch_available
+
+            if not usearch_available():
+                logger.warning("vector.backend=hnsw 但 usearch/numpy 不可用，回退精确向量检索")
+                self._hnsw_unavailable = True
+                return None
+            self._hnsw = get_shared_hnsw_index(self.db_path, cfg)
+        return self._hnsw
+
+    def _remove_from_hnsw(self, rowids: list[int]) -> None:
+        if not rowids:
+            return
+        index = self._get_hnsw()
+        if index is not None:
+            index.remove(rowids)
+        else:
+            from .vector_index import invalidate_vector_index
+
+            invalidate_vector_index(self.db_path)
+
+    def _invalidate_hnsw(self) -> None:
+        from .vector_index import invalidate_vector_index
+
+        invalidate_vector_index(self.db_path)
+
+    def _filter_by_tag(
+        self,
+        hits: list[tuple[int, float]],
+        tag: str,
+    ) -> list[tuple[int, float]]:
+        if not hits:
+            return []
+        rowids = [rowid for rowid, _ in hits]
+        placeholders = ",".join("?" * len(rowids))
+        with sqlite3.connect(self.db_path, timeout=30.0) as conn:
+            rows = conn.execute(
+                f"SELECT rowid FROM {CONTENT_TABLE} "
+                f"WHERE rowid IN ({placeholders}) "
+                f"AND (',' || tags || ',') LIKE ?",
+                [*rowids, f"%,{tag},%"],
+            ).fetchall()
+        allowed = {row[0] for row in rows}
+        return [(rowid, score) for rowid, score in hits if rowid in allowed]
+
+    def _exact_search(
+        self,
+        query_vec: list[float],
+        limit: int,
+        tag: 'str | None' = None,
+        min_score: float = 0.0,
+        candidate_rowids: 'set[int] | None' = None,
+    ) -> list[tuple[int, float]]:
+        """精确余弦检索；candidate_rowids 用于只重排 BM25 候选。"""
+        if not query_vec:
+            return []
+        if candidate_rowids is not None and not candidate_rowids:
+            return []
+
+        sql = f"SELECT e.rowid, e.vector FROM {EMB_TABLE} e"
+        where: list[str] = []
+        params: list = []
+        if candidate_rowids is not None:
+            placeholders = ",".join("?" * len(candidate_rowids))
+            where.append(f"e.rowid IN ({placeholders})")
+            params.extend(sorted(candidate_rowids))
+        if tag:
+            sql += f" JOIN {CONTENT_TABLE} c ON c.rowid = e.rowid"
+            where.append("(',' || c.tags || ',') LIKE ?")
+            params.append(f"%,{tag},%")
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+
+        with sqlite3.connect(self.db_path, timeout=30.0) as conn:
+            rows = conn.execute(sql, params).fetchall()
+
+        scored = [
+            (rowid, _cosine(_unpack_vector(blob), query_vec))
+            for rowid, blob in rows
+        ]
+        scored = [item for item in scored if item[1] >= min_score]
+        scored.sort(key=lambda x: x[1], reverse=True)
+        return scored[:limit]
+
     def store_embeddings(self, items: list[tuple[int, list[float]]]):
         """批量写入 chunk 向量（rowid, vector）。重复 rowid 覆盖。"""
         if not items:
@@ -165,11 +272,15 @@ class BM25Index:
                     (rowid, len(vector), _pack_vector(vector)),
                 )
             conn.commit()
+        index = self._get_hnsw()
+        if index is not None:
+            index.add(items)
 
     def clear_embeddings(self):
         with sqlite3.connect(self.db_path, timeout=30.0) as conn:
             conn.execute(f"DELETE FROM {EMB_TABLE}")
             conn.commit()
+        self._invalidate_hnsw()
 
     def search_embeddings(
         self,
@@ -177,35 +288,46 @@ class BM25Index:
         limit: int = 10,
         tag: 'str | None' = None,
         min_score: float = 0.0,
+        candidate_rowids: 'set[int] | None' = None,
     ) -> list[tuple[int, float]]:
-        """向量 top-k 检索：BLOB 全量加载 + 纯 Python 余弦（零依赖，小语料够用）。
+        """向量 top-k 检索。
+
+        - candidate_rowids 非空：只对这批 rowid 做精确余弦（add_new_rows=false 的重排路径）
+        - backend=hnsw：走 usearch，tag 过滤时多取候选，不足则精确兜底
+        - 其他情况：BLOB 全量加载 + 纯 Python 余弦
 
         Returns:
             [(rowid, cosine), ...] 按相似度降序
         """
         if not query_vec:
             return []
-        with sqlite3.connect(self.db_path, timeout=30.0) as conn:
-            if tag:
-                rows = conn.execute(
-                    f"""
-                    SELECT e.rowid, e.vector FROM {EMB_TABLE} e
-                    JOIN {CONTENT_TABLE} c ON c.rowid = e.rowid
-                    WHERE (',' || c.tags || ',') LIKE ?
-                    """,
-                    (f"%,{tag},%",),
-                ).fetchall()
-            else:
-                rows = conn.execute(
-                    f"SELECT rowid, vector FROM {EMB_TABLE}"
-                ).fetchall()
-        scored = [
-            (rowid, _cosine(_unpack_vector(blob), query_vec))
-            for rowid, blob in rows
-        ]
-        scored = [item for item in scored if item[1] >= min_score]
-        scored.sort(key=lambda x: x[1], reverse=True)
-        return scored[:limit]
+        if candidate_rowids is not None:
+            return self._exact_search(
+                query_vec, limit, tag, min_score, candidate_rowids
+            )
+
+        index = self._get_hnsw()
+        if index is not None:
+            cfg = self.vector_config
+            overfetch = cfg.hnsw.overfetch if tag and cfg is not None else 1
+            try:
+                hits = index.search(
+                    query_vec,
+                    max(limit * overfetch, limit),
+                    min_score=min_score,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("HNSW 检索异常，回退精确检索: %s", exc)
+                hits = None
+            if hits is not None:
+                if tag:
+                    hits = self._filter_by_tag(hits, tag)
+                    if len(hits) < limit:
+                        # 过滤后候选不足：对 tagged 子集做精确兜底
+                        return self._exact_search(query_vec, limit, tag, min_score)
+                return hits[:limit]
+
+        return self._exact_search(query_vec, limit, tag, min_score)
 
     def count_embeddings(self) -> int:
         with sqlite3.connect(self.db_path, timeout=30.0) as conn:
@@ -219,6 +341,8 @@ class BM25Index:
         tag: 'str | None' = None,
         tokenized_query: 'str | None' = None,
         coverage_groups: 'list[list[str]] | None' = None,
+        stats: 'dict | None' = None,
+        with_why: bool = False,
     ) -> list[dict]:
         """BM25 搜索，同时检索正文和摘要，RRF 融合后返回原文。
 
@@ -228,6 +352,8 @@ class BM25Index:
             tag: 标签过滤。
             tokenized_query: 若提供则直接使用该 tokenized 表达式，跳过内部 tokenize_query。
             coverage_groups: 相关性门槛用的查询词组（组内同义词任一命中即可）；None 表示关闭覆盖率过滤。
+            stats: 回填候选数等诊断信息。
+            with_why: 为每条结果附命中路由与排名。
         """
         tokenized = tokenized_query if tokenized_query is not None else tokenize_query(query)
         # 噪音查询（如 "###"）分词后为空：直接短路，避免 MATCH '' 抛 FTS5 语法错误
@@ -238,6 +364,8 @@ class BM25Index:
         return self._rrf_fuse_rows(
             query, content_rows, summary_rows, limit,
             coverage_groups=coverage_groups,
+            stats=stats,
+            with_why=with_why,
         )
 
     def search_hybrid(
@@ -251,6 +379,8 @@ class BM25Index:
         min_similarity: float = 0.0,
         add_new_rows: bool = True,
         coverage_groups: 'list[list[str]] | None' = None,
+        stats: 'dict | None' = None,
+        with_why: bool = False,
     ) -> list[dict]:
         """混合检索：BM25 正文 + BM25 摘要 + 向量 三路 RRF 融合。
 
@@ -267,10 +397,21 @@ class BM25Index:
             return self._rrf_fuse_rows(
                 query, content_rows, summary_rows, limit,
                 coverage_groups=coverage_groups,
+                stats=stats,
+                with_why=with_why,
             )
 
+        candidate_rowids = None
+        if not add_new_rows:
+            candidate_rowids = {row[0] for row in content_rows}
+            candidate_rowids.update(row[0] for row in summary_rows)
+
         vec_hits = self.search_embeddings(
-            query_vec, limit * 3, tag, min_score=min_similarity
+            query_vec,
+            limit * 3,
+            tag,
+            min_score=min_similarity,
+            candidate_rowids=candidate_rowids,
         )
         return self._rrf_fuse_rows(
             query,
@@ -281,6 +422,8 @@ class BM25Index:
             k=vec_k,
             add_new_rows=add_new_rows,
             coverage_groups=coverage_groups,
+            stats=stats,
+            with_why=with_why,
         )
 
     def _search_field(
@@ -340,6 +483,29 @@ class BM25Index:
             item["parent_id"] = parent_id
         return item
 
+    def fetch_rows(self, rowids: 'list[int]') -> dict[int, dict]:
+        """按 rowid 取完整正文与 parent 上下文（默认结果里的 text 是截断的）。"""
+        ids = [int(r) for r in rowids if r is not None]
+        if not ids:
+            return {}
+        placeholders = ",".join("?" * len(ids))
+        with sqlite3.connect(self.db_path, timeout=30.0) as conn:
+            rows = conn.execute(
+                f"SELECT rowid, source, file_path, tags, content, parent_text "
+                f"FROM {CONTENT_TABLE} WHERE rowid IN ({placeholders})",
+                ids,
+            ).fetchall()
+        out: dict[int, dict] = {}
+        for row in rows:
+            out[int(row[0])] = {
+                "source": row[1],
+                "file_path": row[2],
+                "tags": row[3],
+                "text": row[4] or "",
+                "parent_text": row[5] or "",
+            }
+        return out
+
     def _rrf_fuse_rows(
         self,
         query: str,
@@ -350,23 +516,30 @@ class BM25Index:
         k: int = 60,
         add_new_rows: bool = True,
         coverage_groups: 'list[list[str]] | None' = None,
+        stats: 'dict | None' = None,
+        with_why: bool = False,
     ) -> list[dict]:
         """RRF 融合正文、摘要、（可选）向量的搜索结果。
 
         add_new_rows=False 时只给 BM25 已命中的行加向量加权，避免纯向量噪声
         在 BM25 零命中时冒充结果；融合后再按查询核心词覆盖率过滤泛词命中。
         coverage_groups=None 时关闭覆盖率过滤（同义词/模糊扩展场景）。
+
+        stats: 传入 dict 时回填候选数与覆盖率过滤丢弃数（供 UI/诊断用）。
+        with_why: 为每条结果附 ``why``（命中路由与各路由排名），供 UI 展示。
         """
         rrf_scores: dict[int, float] = {}
         best_item: dict[int, dict] = {}
         summaries: dict[int, str] = {}
         bm25_rowids: set[int] = set()
+        route_ranks: dict[int, dict[str, int]] = {}
 
         for rank, row in enumerate(content_rows, start=1):
             rowid = row[0]
             rrf_scores[rowid] = rrf_scores.get(rowid, 0.0) + 1.0 / (k + rank)
             bm25_rowids.add(rowid)
             summaries[rowid] = row[8] if len(row) > 8 else ""
+            route_ranks.setdefault(rowid, {})["content"] = rank
             if rowid not in best_item:
                 best_item[rowid] = self._row_to_item(row)
 
@@ -375,6 +548,7 @@ class BM25Index:
             rrf_scores[rowid] = rrf_scores.get(rowid, 0.0) + 1.0 / (k + rank)
             bm25_rowids.add(rowid)
             summaries[rowid] = row[8] if len(row) > 8 else ""
+            route_ranks.setdefault(rowid, {})["summary"] = rank
             if rowid not in best_item:
                 best_item[rowid] = self._row_to_item(row)
 
@@ -399,6 +573,7 @@ class BM25Index:
             for rank, rowid in enumerate(vec_sims, start=1):
                 if rowid not in best_item:
                     continue
+                route_ranks.setdefault(rowid, {})["vector"] = rank
                 rrf_scores[rowid] = rrf_scores.get(rowid, 0.0) + 1.0 / (k + rank)
 
         fused = sorted(
@@ -420,6 +595,7 @@ class BM25Index:
                     coverage_groups,
                 ) >= MIN_QUERY_COVERAGE
             ]
+        coverage_dropped = max(len(best_item) - len(fused), 0)
         fused = fused[:limit]
 
         # 给结果加上 rank，并保住 rowid 在内部字段方便调试
@@ -438,7 +614,25 @@ class BM25Index:
                     item["score_kind"] = "bm25"
             else:
                 item["score_kind"] = "bm25"
+            if with_why:
+                ranks = route_ranks.get(item.get("_rowid", 0), {})
+                item["why"] = {
+                    "routes": sorted(ranks, key=lambda r: ranks[r]),
+                    "ranks": ranks,
+                }
             results.append(item)
+
+        if stats is not None:
+            stats.update({
+                "candidates": {
+                    "content": len(content_rows),
+                    "summary": len(summary_rows),
+                    "vector": len(vec_sims),
+                },
+                "fused": len(best_item),
+                "coverage_dropped": coverage_dropped,
+                "returned": len(results),
+            })
         return results
 
     def count_sources(self) -> int:
@@ -453,6 +647,61 @@ class BM25Index:
         with sqlite3.connect(self.db_path, timeout=30.0) as conn:
             row = conn.execute(f"SELECT COUNT(*) FROM {CONTENT_TABLE}").fetchone()
             return row[0] if row else 0
+
+    def count_chunks(
+        self,
+        source: 'str | None' = None,
+        tag: 'str | None' = None,
+    ) -> int:
+        """按 source/tag 过滤后的 chunk 数。"""
+        clause, params = self._chunk_filter(source, tag)
+        with sqlite3.connect(self.db_path, timeout=30.0) as conn:
+            row = conn.execute(
+                f"SELECT COUNT(*) FROM {CONTENT_TABLE} {clause}", params
+            ).fetchone()
+        return int(row[0]) if row else 0
+
+    def list_chunks(
+        self,
+        limit: int = 200,
+        offset: int = 0,
+        source: 'str | None' = None,
+        tag: 'str | None' = None,
+    ) -> list[dict]:
+        """按 rowid 顺序分页列出 chunk 原文（用于「全部片段」浏览）。"""
+        clause, params = self._chunk_filter(source, tag)
+        with sqlite3.connect(self.db_path, timeout=30.0) as conn:
+            rows = conn.execute(
+                f"SELECT rowid, source, file_path, tags, content, parent_text "
+                f"FROM {CONTENT_TABLE} {clause} ORDER BY rowid LIMIT ? OFFSET ?",
+                [*params, max(int(limit), 0), max(int(offset), 0)],
+            ).fetchall()
+        return [
+            {
+                "_rowid": row[0],
+                "source": row[1],
+                "file_path": row[2],
+                "tags": row[3] or "",
+                "text": row[4] or "",
+                "parent_text": row[5] or "",
+            }
+            for row in rows
+        ]
+
+    @staticmethod
+    def _chunk_filter(
+        source: 'str | None',
+        tag: 'str | None',
+    ) -> tuple[str, list]:
+        where: list[str] = []
+        params: list = []
+        if source:
+            where.append("source = ?")
+            params.append(source)
+        if tag:
+            where.append("(',' || tags || ',') LIKE ?")
+            params.append(f"%,{tag},%")
+        return (f"WHERE {' AND '.join(where)}" if where else "", params)
 
     def list_sources_with_meta(self) -> list[dict]:
         """返回 source + tags 列表（按 source 聚合 tags）。"""
@@ -476,6 +725,11 @@ class BM25Index:
             return
         with sqlite3.connect(self.db_path, timeout=30.0) as conn:
             placeholders = ",".join("?" * len(sources))
+            rows = conn.execute(
+                f"SELECT rowid FROM {CONTENT_TABLE} WHERE source IN ({placeholders})",
+                sources,
+            ).fetchall()
+            rowids = [row[0] for row in rows]
             conn.execute(
                 f"DELETE FROM {CONTENT_TABLE} WHERE source IN ({placeholders})",
                 sources,
@@ -487,6 +741,7 @@ class BM25Index:
             )
             self._rebuild_fts_index(conn)
             conn.commit()
+        self._remove_from_hnsw(rowids)
 
     def list_sources(self) -> list[str]:
         with sqlite3.connect(self.db_path, timeout=30.0) as conn:
@@ -516,6 +771,7 @@ class BM25Index:
             )
             self._rebuild_fts_index(conn)
             conn.commit()
+        self._remove_from_hnsw(rowids)
 
     def existing_rowids(self, rowids: list[int]) -> set[int]:
         """返回 rowids 中确实存在于 content 表的子集（用于外部输入校验）。"""
@@ -561,6 +817,8 @@ class BM25Index:
                 )
             self._rebuild_fts_index(conn)
             conn.commit()
+        # 新 chunk 暂无 embedding，索引按数据库重建前先失效
+        self._invalidate_hnsw()
 
 
 # ---------- 向量编解码（零依赖，float32 LE 紧凑存储） ----------

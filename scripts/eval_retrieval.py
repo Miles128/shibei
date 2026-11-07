@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""检索评测：对比 bm25 / hybrid / rerank 的 recall@k、MRR 与负例误召。
+"""检索评测：对比 bm25 / hybrid / hnsw / rerank 的 recall@k、MRR 与负例误召。
 
 用法：
   python scripts/eval_retrieval.py                       # 默认 config.yaml + ~/.shibei/eval/golden.yaml
-  python scripts/eval_retrieval.py --modes bm25,hybrid --min-scores 0.0,0.5,0.6
+  python scripts/eval_retrieval.py --modes bm25,hybrid,hnsw --min-scores 0.0,0.5,0.6
   python scripts/eval_retrieval.py --modes rerank --verbose
 
 golden.yaml 格式：
@@ -47,7 +47,8 @@ def result_name(item: dict) -> str:
 def evaluate(cfg_path: str, golden: list[dict], mode: str, min_score: float,
              add_new_rows: bool, k: int) -> dict:
     cfg = load_config(cfg_path)
-    cfg.vector.enabled = mode in {"hybrid", "rerank"}
+    cfg.vector.enabled = mode in {"hybrid", "hnsw", "rerank"}
+    cfg.vector.backend = "hnsw" if mode == "hnsw" else "exact"
     cfg.rerank.enabled = mode == "rerank"
     cfg.vector.min_score = min_score
     cfg.vector.add_new_rows = add_new_rows
@@ -116,7 +117,7 @@ def main() -> None:
     rows = []
     for mode in modes:
         for add_new in add_modes:
-            scores = min_scores if mode in {"hybrid", "rerank"} else [0.0]
+            scores = min_scores if mode in {"hybrid", "hnsw", "rerank"} else [0.0]
             for min_score in scores:
                 rows.append(evaluate(
                     args.config, golden, mode, min_score, add_new, args.k

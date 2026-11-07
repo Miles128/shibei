@@ -113,12 +113,24 @@ class LLMConfig:
 
 
 @dataclass
+class HnswConfig:
+    """usearch HNSW 索引参数（仅在 vector.backend=hnsw 时生效）。"""
+
+    m: int = 16                     # 每个节点的邻居数
+    ef_construction: int = 200      # 构建时候选集大小
+    ef_search: int = 64             # 查询时候选集大小
+    overfetch: int = 4              # 带 tag 过滤时多取候选的倍数
+
+
+@dataclass
 class VectorConfig:
     """轻量向量混合检索（P2 规格落地）— 默认关闭，保持零依赖。
 
     开启后导入时为 chunk 生成 embedding，搜索用 BM25 + 向量三路 RRF 融合。
     - provider=api：OpenAI-compatible /embeddings 接口（key 走 SHIBEI_LLM_API_KEY）
     - provider=local：可选依赖 fastembed（本地 ONNX，如 BAAI/bge-small-zh-v1.5）
+    - backend=exact：全量/候选集精确余弦（零额外依赖）
+    - backend=hnsw：usearch HNSW，索引缺失时自动重建，不可用时回退 exact
     任一不可用时自动降级纯 BM25。
     """
 
@@ -129,6 +141,8 @@ class VectorConfig:
     batch_size: int = 16                        # 批量 embedding 大小
     min_score: float = 0.5                      # 余弦相似度下限；同领域中文语料通常 0.6+，0.5 只滤掉明显无关
     add_new_rows: bool = False                  # 是否允许向量引入 BM25 未命中的文档（默认只重排已命中项）
+    backend: str = "exact"                      # "exact" | "hnsw"
+    hnsw: HnswConfig = field(default_factory=HnswConfig)
 
 
 @dataclass
@@ -220,14 +234,17 @@ class Config:
         return [Path(s).expanduser() for s in self.sources]
 
 
-def load_config(path: str = "config.yaml") -> Config:
+def load_config(path: 'str | None' = None) -> Config:
     """加载 YAML 配置，环境变量覆盖关键项。
 
+    显式传入的 path 优先；只有没传 path 时才看 SHIBEI_CONFIG。
+    这个顺序是多库 sidecar 的前提：同一个进程要能按名字加载不同 config。
+
     环境变量：
-      SHIBEI_CONFIG       — 配置文件路径（默认 config.yaml）
+      SHIBEI_CONFIG       — 默认配置文件路径（未显式传 path 时生效）
       SHIBEI_SOURCES      — 覆盖数据源（逗号分隔）
     """
-    config_path = os.environ.get("SHIBEI_CONFIG", path)
+    config_path = path or os.environ.get("SHIBEI_CONFIG", "config.yaml")
 
     raw: dict[str, Any] = {}
     if Path(config_path).exists():
@@ -304,7 +321,11 @@ def load_config(path: str = "config.yaml") -> Config:
 
     # 轻量向量混合（可选，默认关）
     if "vector" in raw:
-        cfg.vector = VectorConfig(**raw["vector"])
+        vector_raw = dict(raw["vector"])
+        hnsw_raw = vector_raw.pop("hnsw", None)
+        cfg.vector = VectorConfig(**vector_raw)
+        if isinstance(hnsw_raw, dict):
+            cfg.vector.hnsw = HnswConfig(**hnsw_raw)
 
     # MCP 响应上下文卸载
     if "offload" in raw:

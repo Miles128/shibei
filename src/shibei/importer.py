@@ -218,7 +218,7 @@ class Importer:
         from .bm25 import BM25Index
 
         db_path = self.cfg.db_path_expanded / "fts5.db"
-        bm25 = BM25Index(str(db_path))
+        bm25 = BM25Index(str(db_path), vector_config=self.cfg.vector)
 
         if full:
             bm25.clear()
@@ -298,7 +298,7 @@ def clean_orphans(
     if not dry_run:
         from .bm25 import BM25Index
         db_path = cfg.db_path_expanded / "fts5.db"
-        bm25 = BM25Index(str(db_path))
+        bm25 = BM25Index(str(db_path), vector_config=cfg.vector)
         bm25.remove_sources(orphans)
         for fp in orphans:
             manifest.remove(fp)
