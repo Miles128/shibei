@@ -6,8 +6,10 @@
 支持格式：md, txt, docx, xlsx, csv（配置化扩展名）。
 """
 
+import json
 import logging
 import os
+from datetime import datetime, timezone
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -37,7 +39,9 @@ class Importer:
 
     def run(self, dirs: 'list[str] | None' = None, full: bool = False,
             file_pattern: 'str | None' = None,
-            progress: 'Callable[[int, int], None] | None' = None) -> dict:
+            progress: 'Callable[[int, int], None] | None' = None,
+            force_files: 'list[str] | None' = None,
+            prune: bool = True) -> dict:
         """导入文档。
 
         Args:
@@ -58,6 +62,12 @@ class Importer:
         warnings: list[str] = []
         for d in scan_dirs:
             p = Path(d).expanduser()
+            if p.is_file():
+                if p.suffix.lower() in extensions and (
+                    not file_pattern or fnmatch.fnmatch(p.name, file_pattern)
+                ):
+                    files.append(p)
+                continue
             if p.exists():
                 for ext in extensions:
                     candidates: list[Path] = list(p.rglob(f"*{ext}"))
@@ -73,12 +83,24 @@ class Importer:
         current_files = {str(f): f for f in sorted(files)}
         manifest = Manifest(self.cfg.db_path_expanded)
 
+        forced_paths = {
+            str(Path(f).expanduser()) for f in (force_files or [])
+        }
         if full:
             to_add = list(current_files.values())
             to_update: list[Path] = []
             to_remove = list(manifest.all_paths() - set(current_files.keys()))
         else:
             to_add, to_update, to_remove = manifest.classify(current_files)
+            forced = [
+                current_files[path]
+                for path in forced_paths
+                if path in current_files
+            ]
+            to_add = [path for path in to_add if path not in forced]
+            to_update = list(dict.fromkeys(list(to_update) + forced))
+        if not prune:
+            to_remove = []
 
         changed = to_add + to_update
         skipped = len(current_files) - len(changed)
@@ -88,6 +110,7 @@ class Importer:
         # parent_text/parent_id 在 parent_window=0 时为空字符串
         # summary 默认空字符串，LLM 启用且调用成功时填充
         chunks_data: list[tuple[str, str, str, str, str, str, str]] = []
+        details: list[dict] = []
         ck = self.cfg.chunking
 
         def _parse_one(path: Path) -> tuple[Path, str] | tuple[Path, Exception]:
@@ -113,6 +136,12 @@ class Importer:
             if isinstance(parsed, Exception):
                 warnings.append(f"文件解析失败: {f} ({parsed})")
                 logger.warning("文件解析失败: %s (%s)", f, parsed)
+                details.append({
+                    "path": str(f),
+                    "status": "failed",
+                    "chunks": 0,
+                    "error": str(parsed),
+                })
                 if progress is not None:
                     progress(idx, len(changed))
                 continue
@@ -120,6 +149,38 @@ class Importer:
             content = parsed
             tags = self.tagger.infer(f, content)
             slug = str(f)
+            structural = (
+                ck.structural
+                and ck.parent_window <= 0
+                and str(f).lower().endswith((".md", ".markdown"))
+            )
+            start_count = len(chunks_data)
+            if structural:
+                from ragkit.chunking import chunk_markdown
+
+                ratio = (ck.overlap / ck.max_chars) if ck.max_chars else 0.0
+                for item in chunk_markdown(
+                    content,
+                    max_chars=ck.max_chars,
+                    overlap_ratio=max(ratio, 0.0),
+                ):
+                    section = item.get("section_title") or ""
+                    body = item.get("content") or ""
+                    text = f"## {section}\n\n{body}" if section else body
+                    chunks_data.append(
+                        (slug, str(f), ",".join(tags), text, "", "", "")
+                    )
+                details.append({
+                    "path": str(f),
+                    "status": "ok",
+                    "chunks": len(chunks_data) - start_count,
+                    "tags": tags,
+                    "structured": True,
+                })
+                if progress is not None:
+                    progress(idx, len(changed))
+                continue
+
             chunks = chunk_text(
                 content,
                 max_chars=ck.max_chars,
@@ -145,8 +206,22 @@ class Importer:
                         (slug, str(f), ",".join(tags), chunk_text_str, "", "", "")
                     )
 
+            details.append({
+                "path": str(f),
+                "status": "ok",
+                "chunks": len(chunks_data) - start_count,
+                "tags": tags,
+                "structured": False,
+            })
             if progress is not None:
                 progress(idx, len(changed))
+
+        changed_paths = {str(item) for item in changed}
+        for path in current_files:
+            if path not in changed_paths:
+                details.append({"path": path, "status": "skipped", "chunks": 0})
+        for path in to_remove:
+            details.append({"path": str(path), "status": "removed", "chunks": 0})
 
         # 为每个 chunk 生成一句话中文摘要（LLM 失败时降级为空字符串）
         # chunks_data 元组已是 7 字段：(source, file_path, tags, content, parent_text, parent_id, summary_placeholder)
@@ -206,6 +281,27 @@ class Importer:
         }
         if warnings:
             result["warnings"] = warnings
+
+        failed_count = sum(1 for item in details if item["status"] == "failed")
+        report = {
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "summary": {
+                "files": result["files"],
+                "chunks": result["chunks"],
+                "skipped": result["skipped"],
+                "removed": result["removed"],
+                "deduped": result["deduped"],
+                "failed": failed_count,
+            },
+            "files": details,
+        }
+        report_path = self.cfg.db_path_expanded / "import_report.json"
+        report_path.write_text(
+            json.dumps(report, ensure_ascii=False, indent=1),
+            encoding="utf-8",
+        )
+        result["report_path"] = str(report_path)
+        result["failed"] = failed_count
         return result
 
     def _import_bm25(self, chunks_data: list, sources_to_clear: list[str],
@@ -218,7 +314,7 @@ class Importer:
         from .bm25 import BM25Index
 
         db_path = self.cfg.db_path_expanded / "fts5.db"
-        bm25 = BM25Index(str(db_path))
+        bm25 = BM25Index(str(db_path), vector_config=self.cfg.vector)
 
         if full:
             bm25.clear()
@@ -298,7 +394,7 @@ def clean_orphans(
     if not dry_run:
         from .bm25 import BM25Index
         db_path = cfg.db_path_expanded / "fts5.db"
-        bm25 = BM25Index(str(db_path))
+        bm25 = BM25Index(str(db_path), vector_config=cfg.vector)
         bm25.remove_sources(orphans)
         for fp in orphans:
             manifest.remove(fp)

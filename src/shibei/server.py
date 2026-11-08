@@ -3,6 +3,7 @@
 暴露工具：
   - shibei_context           : 答前上下文包（强制召回入口）
   - shibei_search            : 语义搜索
+  - shibei_brains            : 列出可用库（多项目）
   - shibei_import            : 导入文档
   - shibei_list_sources      : 列出已入库文件
   - shibei_persona           : 轻量画像（按类别聚合的记忆摘要）
@@ -47,6 +48,15 @@ def _init_brain():
 
 
 def _handle_search(brain, args):
+    name = args.get("brain")
+    if name and isinstance(brain, ShibeiClient):
+        return brain.recall(
+            query=args.get("query", ""),
+            limit=args.get("limit", 5),
+            tag=args.get("tag"),
+            mode="raw",
+            brain=name,
+        )
     return brain.search(
         query=args.get("query", ""),
         limit=args.get("limit", 5),
@@ -55,13 +65,25 @@ def _handle_search(brain, args):
 
 
 def _handle_context(brain, args):
-    result = brain.context(
-        message=args.get("message", ""),
-        limit=args.get("limit", 5),
-        tag=args.get("tag"),
-        write_hints=args.get("write_hints", True),
-        query=args.get("query"),
-    )
+    name = args.get("brain")
+    if name and isinstance(brain, ShibeiClient):
+        result = brain.recall(
+            message=args.get("message", ""),
+            query=args.get("query"),
+            limit=args.get("limit", 5),
+            tag=args.get("tag"),
+            mode="pack",
+            write_hints=args.get("write_hints", True),
+            brain=name,
+        )
+    else:
+        result = brain.context(
+            message=args.get("message", ""),
+            limit=args.get("limit", 5),
+            tag=args.get("tag"),
+            write_hints=args.get("write_hints", True),
+            query=args.get("query"),
+        )
     # 自动记忆抽取（P1，可选，默认关）：检测到第一人称披露时用 LLM 提取并写入
     cfg = getattr(brain, "config", None)
     am = getattr(cfg, "auto_memory", None) if cfg is not None else None
@@ -83,6 +105,16 @@ def _handle_persona(brain, args):
         per_category=args.get("per_category", 5),
         max_facts=args.get("max_facts", 20),
     )
+
+
+def _handle_brains(brain, args):
+    """列出可用库；单库模式下退化为 default。"""
+    if isinstance(brain, ShibeiClient):
+        return brain.brains()
+    return {
+        "default": "default",
+        "brains": [{"name": "default", "default": True}],
+    }
 
 
 def _handle_import(brain, args):
@@ -180,6 +212,13 @@ TOOLS: dict[str, dict[str, Any]] = {
                     "type": "string",
                     "description": "标签过滤（如 interview/ai/finance）",
                 },
+                "brain": {
+                    "type": "string",
+                    "description": (
+                        "可选。库名（多库 daemon 下使用）；"
+                        "'*' 表示跨库联邦召回。不传用默认库。"
+                    ),
+                },
                 "write_hints": {
                     "type": "boolean",
                     "default": True,
@@ -202,9 +241,24 @@ TOOLS: dict[str, dict[str, Any]] = {
                 "query": {"type": "string", "description": "搜索关键词（建议 Agent 侧已改写）"},
                 "limit": {"type": "integer", "default": 5, "description": "返回条数上限"},
                 "tag": {"type": "string", "description": "标签过滤（如 interview/ai/finance）"},
+                "brain": {
+                    "type": "string",
+                    "description": (
+                        "可选。库名（多库 daemon 下使用）；"
+                        "'*' 表示跨库联邦召回。不传用默认库。"
+                    ),
+                },
             },
             "required": ["query"],
         },
+    },
+    "shibei_brains": {
+        "handler": _handle_brains,
+        "description": (
+            "列出当前 daemon 可用的库（brain）：名称、config 路径、db 路径、chunk 数。"
+            "多项目场景先调本工具，再在 shibei_context / shibei_search 里传 brain 参数。"
+        ),
+        "inputSchema": {"type": "object", "properties": {}},
     },
     "shibei_import": {
         "handler": _handle_import,

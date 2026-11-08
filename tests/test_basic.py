@@ -39,6 +39,20 @@ tagging:
     assert len(cfg.tagging.rules) >= 4
 
 
+def test_explicit_path_wins_over_env(tmp_path, monkeypatch):
+    """多库 sidecar 前提：显式 path 不能被 SHIBEI_CONFIG 覆盖。"""
+    a = tmp_path / "a.yaml"
+    b = tmp_path / "b.yaml"
+    a.write_text("storage:\n  path: /tmp/a\nsources: []\n", encoding="utf-8")
+    b.write_text("storage:\n  path: /tmp/b\nsources: []\n", encoding="utf-8")
+    monkeypatch.setenv("SHIBEI_CONFIG", str(a))
+
+    assert load_config(str(a)).storage.path == "/tmp/a"
+    assert load_config(str(b)).storage.path == "/tmp/b"
+    # 未显式传 path 时才回落到环境变量
+    assert load_config().storage.path == "/tmp/a"
+
+
 def test_tagger_regex():
     """regex 标签推断（兼容旧配置）"""
     from shibei.tagger import Tagger

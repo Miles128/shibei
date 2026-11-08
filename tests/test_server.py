@@ -197,7 +197,7 @@ def test_server_tools_list(server_env, monkeypatch):
 
     assert len(responses) == 1
     tools = responses[0]["result"]["tools"]
-    assert len(tools) == 10
+    assert len(tools) == 11
     assert {t["name"] for t in tools} == set(server.TOOLS.keys())
     assert "shibei_context" in {t["name"] for t in tools}
 

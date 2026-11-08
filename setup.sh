@@ -7,7 +7,7 @@ echo "====================="
 # 检查 Python（解析成具体路径，否则 uv 会按名字挑它自己管理的最新版本）
 PYTHON="${SHIBEI_PYTHON:-python3}"
 if ! PYTHON_BIN="$(command -v "$PYTHON")"; then
-    echo "❌ 需要 Python 3.9+，未找到: $PYTHON"
+    echo "❌ 需要 Python 3.12+，未找到: $PYTHON"
     exit 1
 fi
 echo "✅ Python: $("$PYTHON_BIN" --version)"
@@ -25,14 +25,10 @@ echo "📦 安装依赖..."
 if [ ! -x .venv/bin/python ]; then
     uv venv .venv --python "$PYTHON_BIN" --quiet
 fi
-# fastembed（本地向量后端）要求 Python 3.10+；低版本只装核心与格式解析依赖
-if "$PYTHON_BIN" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)'; then
-    EXTRAS=".[all,vector]"
-else
-    EXTRAS=".[all]"
-    echo "ℹ️ Python <3.10，跳过 fastembed 向量依赖（BM25 检索不受影响）"
-fi
-uv pip install --python .venv/bin/python -e "$EXTRAS" --quiet
+# 公共召回原语先装（独立项目），主包依赖它
+uv pip install --python .venv/bin/python \
+    "shibei-ragkit @ git+https://github.com/Miles128/shibei-ragkit.git@v0.1.0" --quiet
+uv pip install --python .venv/bin/python -e ".[all,vector]" --quiet
 
 # 初始化配置
 echo ""

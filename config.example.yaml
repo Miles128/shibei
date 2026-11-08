@@ -102,6 +102,12 @@ vector:
   batch_size: 16                   # 批量 embedding 大小
   min_score: 0.5                   # 余弦相似度下限；低于此值不参与融合
   add_new_rows: false              # false=向量只重排 BM25 已命中项，避免零命中时返回纯向量噪声
+  backend: exact                   # "exact" | "hnsw"；hnsw 需安装 usearch，不可用时自动回退
+  hnsw:
+    m: 16                          # 每个节点邻居数
+    ef_construction: 200           # 构建时候选集大小
+    ef_search: 64                  # 查询时候选集大小
+    overfetch: 4                   # 带 tag 过滤时多取候选的倍数
 
 # === MCP 响应上下文卸载（对标 TencentDB 短期上下文治理） ===
 # shibei_context / shibei_search 结果超过 max_bytes 时，完整 JSON 写入

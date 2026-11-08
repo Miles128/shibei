@@ -30,13 +30,131 @@ def cmd_sidecar(args):
         argv.append("--stop")
     elif args.daemon:
         argv.append("--daemon")
+    if getattr(args, "all", False):
+        argv.append("--all")
     sidecar_main(argv)
+
+
+def cmd_ui(args):
+    """召回诊断台（TUI）。"""
+    try:
+        from .tui import main as tui_main
+    except ImportError:
+        print("❌ 未安装 textual，请先执行：uv pip install 'shibei[tui]'")
+        sys.exit(1)
+    tui_main(args.resolved_config, brain=getattr(args, "brain", None))
+
+
+def cmd_tokens(args):
+    """按库授权的 token 管理。"""
+    from .tokens import create_token, list_tokens, revoke_token, tokens_file
+
+    action = getattr(args, "tokens_cmd", None) or "list"
+    if action == "add":
+        read = [x.strip() for x in (args.read or "*").split(",") if x.strip()]
+        write = [x.strip() for x in (args.write or "").split(",") if x.strip()]
+        token, _entry = create_token(args.name, read=read, write=write)
+        print(f"✅ token '{args.name}' 已创建（只显示一次）：")
+        print(token)
+        print(f"   read={read}  write={write or '[]'}")
+        print(f"   文件: {tokens_file()}")
+        print("   下游程序: export SHIBEI_TOKEN=<上面的 token>")
+        return
+    if action == "revoke":
+        if revoke_token(args.name):
+            print(f"✅ 已吊销 '{args.name}'")
+        else:
+            print(f"❌ 未找到 '{args.name}'")
+            sys.exit(1)
+        return
+
+    rows = list_tokens()
+    print(f"token 文件: {tokens_file()}")
+    if not rows:
+        print("（空，只有 daemon 的 bootstrap token 可用）")
+        return
+    for row in rows:
+        print(
+            f"  {row['name']:<12} {row['token']:<14} "
+            f"read={row['read']} write={row['write']}"
+        )
+
+
+def cmd_watch(args):
+    """可选：轮询 sources，做增量导入（无额外依赖）。"""
+    import time
+
+    client = ShibeiClient(args.resolved_config)
+    interval = max(float(args.interval), 1.0)
+    print(f"👀 监听中：每 {interval:g}s 检查一次（Ctrl-C 退出）")
+    try:
+        while True:
+            result = client.import_all(dirs=args.dirs, full=False, timeout=600)
+            if result.get("files"):
+                print(
+                    f'  {time.strftime("%H:%M:%S")} 导入 {result["files"]} 文件'
+                    f' / {result["chunks"]} chunks，删除 {result.get("removed", 0)} 个旧源'
+                )
+            time.sleep(interval)
+    except KeyboardInterrupt:
+        print("\n停止监听")
+
+
+def cmd_brains(args):
+    """多库注册表管理。"""
+    from .brains import brains_file, load_brains, register_brain, unregister_brain
+
+    action = getattr(args, "brains_cmd", None) or "list"
+    if action == "add":
+        if getattr(args, "url", None):
+            from .brains import register_remote
+
+            path = register_remote(
+                args.name,
+                args.url,
+                token=getattr(args, "token", "") or "",
+                brain=getattr(args, "remote_brain", "") or "",
+                description=getattr(args, "description", "") or "",
+            )
+            print(f"✅ 已注册远程 brain '{args.name}' → {path}")
+        else:
+            if not getattr(args, "config", None):
+                print("❌ 需要 config 路径，或用 --url 注册远程库")
+                sys.exit(1)
+            path = register_brain(
+                args.name, args.config, getattr(args, "description", "") or ""
+            )
+            print(f"✅ 已注册 brain '{args.name}' → {path}")
+        print("   下一步: shibei sidecar --daemon --all")
+        return
+    if action == "remove":
+        if unregister_brain(args.name):
+            print(f"✅ 已移除 brain '{args.name}'")
+        else:
+            print(f"❌ 未找到 brain '{args.name}'")
+            sys.exit(1)
+        return
+
+    entries = load_brains()
+    print(f"注册表: {brains_file()}")
+    if not entries:
+        print("（空）")
+        print("用法: shibei brains add work ~/work/shibei.yaml")
+        return
+    for name, entry in entries.items():
+        desc = entry.get("description") or ""
+        suffix = f"  # {desc}" if desc else ""
+        target = entry.get("url") or entry.get("config") or "-"
+        kind = "remote" if entry.get("url") else "local"
+        print(f"  {name:<12} [{kind}] {target}{suffix}")
 
 
 def cmd_context(args):
     """答前上下文包：从用户消息抽词并召回文档/记忆"""
-    brain = ShibeiClient(args.resolved_config)
-    pack = brain.context(
+    client = ShibeiClient(args.resolved_config)
+    if getattr(args, "brain", None):
+        client.brain = args.brain
+    pack = client.context(
         message=args.message,
         limit=args.limit,
         tag=args.tag,
@@ -64,9 +182,11 @@ def cmd_context(args):
 
 
 def cmd_search(args):
-    brain = ShibeiClient(args.resolved_config)
+    client = ShibeiClient(args.resolved_config)
+    if getattr(args, "brain", None):
+        client.brain = args.brain
     expand = True if args.expand else (False if args.no_expand else None)
-    results = brain.search(
+    results = client.search(
         args.query,
         limit=args.limit,
         tag=args.tag,
@@ -568,6 +688,42 @@ def main():
     p_side = sub.add_parser("sidecar", help="启动或停止拾贝 sidecar")
     p_side.add_argument("--daemon", action="store_true", help="后台运行")
     p_side.add_argument("--stop", action="store_true", help="停止已有 sidecar")
+    p_side.add_argument("--all", action="store_true",
+                        help="一个进程服务 brains 注册表里的所有库（需先 shibei brains add）")
+
+    # watch（可选：轮询增量导入）
+    p_watch = sub.add_parser("watch", help="可选：轮询 sources 做增量导入")
+    p_watch.add_argument("--interval", type=float, default=10.0, help="轮询间隔秒数")
+    p_watch.add_argument("--dirs", default=None, help="逗号分隔目录，默认用 config.sources")
+
+    # ui
+    p_ui = sub.add_parser("ui", help="召回诊断台（Textual TUI）")
+    p_ui.add_argument("--brain", default=None, help="启动时使用的库名")
+
+    # brains
+    p_brains = sub.add_parser("brains", help="管理多库注册表")
+    p_brains_sub = p_brains.add_subparsers(dest="brains_cmd")
+    p_brains_sub.add_parser("list", help="列出已注册的库")
+    p_add = p_brains_sub.add_parser("add", help="注册一个库（本地或远程）")
+    p_add.add_argument("name", help="库名（如 work）")
+    p_add.add_argument("config", nargs="?", help="本地库的 config.yaml 路径")
+    p_add.add_argument("--url", default=None, help="远程 daemon 地址（如 http://127.0.0.1:47821）")
+    p_add.add_argument("--token", default="", help="远程 daemon 的 token")
+    p_add.add_argument("--remote-brain", default="", help="远端多库 daemon 里的库名")
+    p_add.add_argument("--description", default="", help="备注")
+    p_remove = p_brains_sub.add_parser("remove", help="移除一个库")
+    p_remove.add_argument("name", help="库名")
+
+    # tokens
+    p_tokens = sub.add_parser("tokens", help="管理按库授权的 token")
+    p_tokens_sub = p_tokens.add_subparsers(dest="tokens_cmd")
+    p_tokens_sub.add_parser("list", help="列出 token（脱敏）")
+    p_tok_add = p_tokens_sub.add_parser("add", help="创建一个 token")
+    p_tok_add.add_argument("name", help="token 名称（如 cursor）")
+    p_tok_add.add_argument("--read", default="*", help="可读库，逗号分隔，默认 *")
+    p_tok_add.add_argument("--write", default="", help="可写库，逗号分隔，默认只读")
+    p_tok_revoke = p_tokens_sub.add_parser("revoke", help="吊销 token")
+    p_tok_revoke.add_argument("name", help="token 名称")
 
     # context
     p_ctx = sub.add_parser("context", help="答前上下文包（从用户消息召回文档+记忆）")
@@ -578,6 +734,7 @@ def main():
     p_ctx.add_argument("--tag", help="标签过滤")
     p_ctx.add_argument("--no-write-hints", action="store_true",
                        help="不返回 suggest_remember")
+    p_ctx.add_argument("--brain", default=None, help="指定库名（多库 daemon 下使用）")
 
     # search
     p = sub.add_parser("search", help="语义搜索")
@@ -595,6 +752,7 @@ def main():
     p.add_argument("--synonyms", help="外部同义词表路径（YAML/JSON），临时启用扩展")
     p.add_argument("--fuzzy", action="store_true",
                    help="启用编辑距离模糊匹配兜底")
+    p.add_argument("--brain", default=None, help="指定库名（多库 daemon 下使用）")
 
     # import
     p_import = sub.add_parser("import", help="全量导入文档")
@@ -750,6 +908,16 @@ def main():
         }.get(memories_cmd, lambda a: p_memories.print_help())(args)
         return
 
+    # brains 子命令组
+    if args.cmd == "brains":
+        cmd_brains(args)
+        return
+
+    # tokens 子命令组
+    if args.cmd == "tokens":
+        cmd_tokens(args)
+        return
+
     # Core commands
     if args.cmd == "dream":
         cmd_dream(args)
@@ -758,6 +926,8 @@ def main():
     {
         "serve": cmd_serve,
         "sidecar": cmd_sidecar,
+        "ui": cmd_ui,
+        "watch": cmd_watch,
         "context": cmd_context,
         "search": cmd_search,
         "import": cmd_import,

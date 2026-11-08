@@ -149,22 +149,13 @@ def query_terms(text: str, max_terms: int = 20) -> list[str]:
 
 
 def query_coverage_groups(text: str, groups: list[list[str]]) -> float:
-    """按同义词/模糊候选分组计算覆盖度：组内任一词命中即算该组命中。"""
-    if not groups:
-        return 1.0
-    lowered = (text or "").lower()
-    total = 0
-    matched = 0
-    for group in groups:
-        alternatives = [t for t in group if t]
-        if not alternatives:
-            continue
-        # 权重按原始查询词算，避免长英文同义词（interview）抬高泛词的分量
-        weight = max(len(alternatives[0]) - 1, 0)
-        total += weight
-        if any(t.lower() in lowered for t in alternatives):
-            matched += weight
-    return matched / total if total else 1.0
+    """按同义词/模糊候选分组计算覆盖度：组内任一词命中即算该组命中。
+
+    实现已抽到 ragkit.coverage，这里保留旧签名供现有调用方使用。
+    """
+    from ragkit.coverage import coverage_ratio
+
+    return coverage_ratio(text, groups)
 
 
 def _bigram_tokenize(text: str) -> str:

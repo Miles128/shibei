@@ -123,3 +123,54 @@ def test_import_then_search(sidecar_server):
     )
     assert searched["total"] >= 1
     assert "布隆" in searched["results"][0]["text"]
+
+
+def test_recall_returns_trace_and_why(sidecar_server):
+    info, _ = sidecar_server
+    _http(info["base_url"], info["token"], "POST", "/v1/import", {})
+    status, body = _http(
+        info["base_url"],
+        info["token"],
+        "POST",
+        "/v1/recall",
+        {"query": "Redis 布隆", "trace": True, "full_text": True},
+    )
+    assert status == 200
+    assert body["schema_version"] == 1
+    assert body["mode"] == "raw"
+    assert body["total"] >= 1
+    assert body["trace"]["stages"]
+    assert "why" in body["results"][0]
+
+
+def test_chunks_endpoint_lists_all(sidecar_server):
+    info, _ = sidecar_server
+    _http(info["base_url"], info["token"], "POST", "/v1/import", {})
+    status, body = _http(
+        info["base_url"], info["token"], "GET", "/v1/chunks?limit=10&offset=0"
+    )
+    assert status == 200
+    assert body["total"] >= 1
+    assert body["items"]
+    assert "text" in body["items"][0]
+
+
+def test_reindex_and_eval_endpoints(sidecar_server, tmp_path):
+    info, cfg_path = sidecar_server
+    _http(info["base_url"], info["token"], "POST", "/v1/import", {})
+
+    source = str(Path(cfg_path).parent / "notes" / "redis.md")
+    status, rebuilt = _http(
+        info["base_url"], info["token"], "POST", "/v1/reindex", {"source": source}
+    )
+    assert status == 200
+    assert rebuilt["files"] == 1
+
+    golden = str(tmp_path / "golden.yaml")
+    status, saved = _http(
+        info["base_url"], info["token"], "POST", "/v1/eval/save",
+        {"query": "Redis 布隆", "expect": ["redis.md"], "path": golden},
+    )
+    assert status == 200
+    assert saved["queries"] == 1
+    assert Path(golden).exists()

@@ -1,6 +1,7 @@
 """Shibei 服务层 — 统一入口"""
 
 import logging
+from pathlib import Path
 from collections.abc import Callable
 
 from .config import load_config
@@ -33,33 +34,68 @@ class Shibei:
         fuzzy: 'bool | None' = None,
         synonyms: 'str | None' = None,
     ) -> dict:
-        from copy import deepcopy
+        """原始检索结果（不压缩）。统一走 recall 内核。"""
+        return self.recall(
+            query=query,
+            limit=limit,
+            tag=tag,
+            mode="raw",
+            memories=include_memories,
+            rewrite=rewrite,
+            llm_rewrite=llm_rewrite,
+            expand=expand,
+            fuzzy=fuzzy,
+            synonyms=synonyms,
+        )
 
-        from .searcher import Searcher
+    def recall(
+        self,
+        query: 'str | None' = None,
+        message: str = "",
+        limit: int = 5,
+        tag: 'str | None' = None,
+        mode: str = "raw",
+        memories: bool = True,
+        persona: bool = False,
+        write_hints: bool = False,
+        trace: bool = False,
+        full_text: bool = False,
+        mmr: bool = False,
+        rewrite: 'bool | None' = None,
+        llm_rewrite: 'bool | None' = None,
+        expand: 'bool | None' = None,
+        fuzzy: 'bool | None' = None,
+        synonyms: 'str | None' = None,
+        vector: 'bool | None' = None,
+        rerank: 'bool | None' = None,
+    ) -> dict:
+        """统一召回：CLI / MCP / DSH / HTTP / TUI 共用的单一口径。
 
-        cfg = self.config
-        if any(
-            x is not None
-            for x in (rewrite, llm_rewrite, expand, fuzzy, synonyms)
-        ):
-            cfg = deepcopy(self.config)
-            if rewrite:
-                cfg.rewriter.enabled = True
-            if llm_rewrite:
-                cfg.rewriter.enabled = True
-                cfg.rewriter.use_llm = True
-            if expand is True:
-                cfg.expander.enabled = True
-            elif expand is False:
-                cfg.expander.enabled = False
-            if synonyms:
-                cfg.expander.synonyms_path = synonyms
-                cfg.expander.enabled = True
-            if fuzzy:
-                cfg.expander.fuzzy = True
-                cfg.expander.enabled = True
-        return Searcher(cfg).search(
-            query, limit, tag, include_memories=include_memories
+        mode="raw" 返回未压缩结果；mode="pack" 返回答前上下文包（含 persona）。
+        trace=True 时额外返回阶段耗时、命中路由与丢弃统计。
+        """
+        from .recall import recall as _recall
+
+        return _recall(
+            self.config,
+            query=query,
+            message=message,
+            limit=limit,
+            tag=tag,
+            mode=mode,
+            memories=memories,
+            persona=persona,
+            write_hints=write_hints,
+            trace=trace,
+            full_text=full_text,
+            mmr=mmr,
+            rewrite=rewrite,
+            llm_rewrite=llm_rewrite,
+            expand=expand,
+            fuzzy=fuzzy,
+            synonyms=synonyms,
+            vector=vector,
+            rerank=rerank,
         )
 
     def context(
@@ -92,9 +128,102 @@ class Shibei:
             dirs, full=full, file_pattern=file_pattern, progress=progress
         )
 
+    def reindex(self, source: str) -> dict:
+        """强制重建单个文件（跳过 manifest 哈希判断，不影响其他文件）。"""
+        from .importer import Importer
+
+        if not source:
+            raise ValueError("source 不能为空")
+        return Importer(self.config).run(
+            dirs=[source], force_files=[source], prune=False
+        )
+
+    def save_eval_sample(
+        self,
+        query: str,
+        expect: 'list[str] | None' = None,
+        path: 'str | None' = None,
+    ) -> dict:
+        """把一次查询写入 scripts/eval_retrieval.py 的 golden.yaml。"""
+        import yaml
+
+        query = (query or "").strip()
+        if not query:
+            raise ValueError("query 不能为空")
+        target = (
+            Path(path)
+            if path
+            else Path.home() / ".shibei" / "eval" / "golden.yaml"
+        )
+        data: dict = {}
+        if target.exists():
+            data = yaml.safe_load(target.read_text(encoding="utf-8")) or {}
+        queries = list(data.get("queries") or [])
+        expect = [str(item) for item in (expect or [])]
+
+        updated = False
+        for item in queries:
+            if item.get("query") == query:
+                item["expect"] = expect
+                updated = True
+                break
+        if not updated:
+            queries.append({"query": query, "expect": expect})
+
+        data["queries"] = queries
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(
+            yaml.safe_dump(data, allow_unicode=True, sort_keys=False),
+            encoding="utf-8",
+        )
+        return {"path": str(target), "queries": len(queries), "updated": updated}
+
+    def import_report(self, limit: int = 0, offset: int = 0) -> dict:
+        """最近一次导入的结构化报告（失败文件 / 每文件 chunk 数）。"""
+        import json
+
+        path = self.config.db_path_expanded / "import_report.json"
+        if not path.exists():
+            return {"generated_at": None, "summary": {}, "files": []}
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {"generated_at": None, "summary": {}, "files": []}
+        files = list(data.get("files") or [])
+        if limit:
+            files = files[offset : offset + limit]
+        data["files"] = files
+        data["total"] = len(data.get("files") or [])
+        return data
+
     def list_sources(self, limit: int = 0, offset: int = 0) -> dict:
         from .importer import list_sources
         return list_sources(self.config, limit=limit, offset=offset)
+
+    def list_chunks(
+        self,
+        limit: int = 200,
+        offset: int = 0,
+        source: 'str | None' = None,
+        tag: 'str | None' = None,
+    ) -> dict:
+        """分页列出库里已有的 chunk（不走向量/BM25，按 rowid 顺序）。"""
+        from .bm25 import BM25Index
+
+        index = BM25Index(
+            str(self.config.db_path_expanded / "fts5.db"),
+            vector_config=self.config.vector,
+        )
+        return {
+            "total": index.count_chunks(source=source, tag=tag),
+            "limit": limit,
+            "offset": offset,
+            "source": source,
+            "tag": tag,
+            "items": index.list_chunks(
+                limit=limit, offset=offset, source=source, tag=tag
+            ),
+        }
 
     def clean_orphans(
         self,

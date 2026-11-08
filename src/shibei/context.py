@@ -7,7 +7,6 @@ import logging
 import re
 
 from .config import Config
-from .searcher import Searcher
 
 logger = logging.getLogger(__name__)
 
@@ -135,70 +134,14 @@ def build_context(
             "total": int,
         }
     """
-    message = (message or "").strip()
-    # Agent 侧改写优先；否则规则抽词；再退回原文
-    query = (query or "").strip() or extract_query_terms(message) or message
+    from .recall import recall
 
-    search_result = Searcher(cfg).search(
-        query, limit=limit, tag=tag, include_memories=True
+    return recall(
+        cfg,
+        query=query,
+        message=message,
+        limit=limit,
+        tag=tag,
+        mode="pack",
+        write_hints=write_hints,
     )
-
-    # 截断结果文本，控制 MCP 上下文体积
-    results = []
-    for r in search_result.get("results", []):
-        item = dict(r)
-        text = item.get("text") or ""
-        if len(text) > 240:
-            item["text"] = text[:240] + "…"
-        parent = item.get("parent_text") or ""
-        if len(parent) > 400:
-            item["parent_text"] = parent[:400] + "…"
-        results.append(item)
-
-    # 记忆同样截断，避免长记忆撑爆 context pack
-    memories = []
-    for m in search_result.get("memories", []):
-        item = dict(m)
-        text = item.get("text") or ""
-        if len(text) > 240:
-            item["text"] = text[:240] + "…"
-        memories.append(item)
-
-    # 轻量画像层（P0）：按类别聚合的高密度事实，答前随包注入
-    persona = None
-    try:
-        from .memory import MemoryStore
-
-        p = MemoryStore(cfg.db_path_expanded).persona()
-        if p.get("total"):
-            persona = {
-                "categories": {
-                    cat: [f["fact"][:120] for f in facts]
-                    for cat, facts in p["categories"].items()
-                },
-                "total": p["total"],
-            }
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("persona 聚合失败: %s", exc)
-
-    pack = {
-        "message": message,
-        "query_used": search_result.get("query_used", query),
-        "total": search_result.get("total", len(results)),
-        "results": results,
-        "memories": memories,
-        "related": search_result.get("related", []),
-    }
-    if persona:
-        pack["persona"] = persona
-    if "rewrite" in search_result:
-        pack["rewrite"] = search_result["rewrite"]
-    if "llm_rewrite" in search_result:
-        pack["llm_rewrite"] = search_result["llm_rewrite"]
-    if "expansion" in search_result:
-        pack["expansion"] = search_result["expansion"]
-
-    if write_hints:
-        pack["suggest_remember"] = suggest_remember_from_message(message)
-
-    return pack

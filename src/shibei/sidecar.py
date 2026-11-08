@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import secrets
 import threading
 from datetime import datetime, timezone
@@ -13,8 +14,11 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
+from .brains import Brains, home_dir
 from .config import load_config
+from .federate import recall_federated
 from .services import Shibei
+from .tokens import TokenStore
 
 VERSION = "0.1.0"
 WRITE_PATHS = {
@@ -28,7 +32,12 @@ WRITE_PATHS = {
     "/v1/consolidate/apply",
     "/v1/clean",
     "/v1/auto-remember",
+    "/v1/reindex",
+    "/v1/eval/save",
 }
+# 注册表写操作：不按库加锁，走 registry_lock
+REGISTRY_PATHS = {"/v1/brains", "/v1/brains/remove"}
+_BRAIN_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
 
 
 def run_dir_for(config_path: str) -> Path:
@@ -42,13 +51,41 @@ def run_file_for(config_path: str) -> Path:
     return run_dir_for(config_path) / "sidecar.json"
 
 
+def shared_run_dir() -> Path:
+    return home_dir() / "run"
+
+
+def shared_run_file() -> Path:
+    return shared_run_dir() / "sidecar.json"
+
+
 class SidecarState:
-    def __init__(self, config_path: str, token: str):
+    """单库或多库 sidecar 的共享状态。"""
+
+    def __init__(self, config_path: str, token: str, multi: bool = False):
         self.config_path = str(Path(config_path).resolve())
         self.token = token
-        self.brain = Shibei(self.config_path)
-        self.write_lock = threading.Lock()
+        self.multi = multi
+        self.brains = Brains(self.config_path)
+        self.tokens = TokenStore()
+        self.registry_lock = threading.Lock()
         self.started_at = datetime.now(timezone.utc).isoformat()
+
+    @property
+    def brain(self) -> Shibei:
+        """默认库（兼容旧调用方）。"""
+        return self.brains.get(self.brains.default_name)
+
+    def lock_for(self, name: str) -> threading.Lock:
+        return self.brains.lock_for(name)
+
+    def scope_for(self, token: str) -> 'dict | None':
+        """bootstrap token = admin；其余查 tokens.yaml。"""
+        if not token:
+            return None
+        if secrets.compare_digest(token, self.token):
+            return {"name": "admin", "read": ["*"], "write": ["*"]}
+        return self.tokens.get(token)
 
 
 def _unauthorized() -> tuple[int, dict]:
@@ -63,17 +100,206 @@ def _not_found(message: str) -> tuple[int, dict]:
     return 404, {"error": {"code": "not_found", "message": message}}
 
 
-def _dispatch(state: SidecarState, method: str, path: str, qs: dict, body: dict) -> tuple[int, Any]:
-    brain = state.brain
+def _requested_brain_names(state: SidecarState, body: dict, qs: dict) -> list[str]:
+    spec = (body or {}).get("brain", (body or {}).get("brains")) or qs.get("brain")
+    if spec in ("*", "all") or (
+        isinstance(spec, list) and any(item in ("*", "all") for item in spec)
+    ):
+        return ["*"]
+    if isinstance(spec, list):
+        names = [str(item) for item in spec]
+    elif spec:
+        names = [str(spec)]
+    else:
+        names = [state.brains.default_name]
+    return [
+        state.brains.default_name if name == "default" else name for name in names
+    ]
+
+
+def _scope_allows(scope: dict, kind: str, names: list[str]) -> bool:
+    allowed = set(scope.get(kind) or [])
+    if "*" in allowed:
+        return True
+    return all(name in allowed for name in names)
+
+
+def _authorize(
+    state: SidecarState,
+    scope: dict,
+    method: str,
+    path: str,
+    body: dict,
+    qs: dict,
+) -> bool:
+    if path == "/v1/health":
+        return True
+    if path == "/v1/brains" and method == "GET":
+        return True  # 列表按 scope 过滤
+    if path in REGISTRY_PATHS:
+        name = str((body or {}).get("name") or "")
+        if not name:
+            return False
+        resolved = state.brains.default_name if name == "default" else name
+        return _scope_allows(scope, "write", [resolved])
+    kind = "write" if (path in WRITE_PATHS and method in ("POST", "PUT")) else "read"
+    return _scope_allows(scope, kind, _requested_brain_names(state, body, qs))
+
+
+def _create_brain_config(name: str) -> str:
+    base = home_dir() / "brains"
+    base.mkdir(parents=True, exist_ok=True)
+    db = home_dir() / "db" / name
+    db.mkdir(parents=True, exist_ok=True)
+    path = base / f"{name}.yaml"
+    path.write_text(
+        f"storage:\n  path: {db}\nsources: []\nextensions:\n  - .md\n",
+        encoding="utf-8",
+    )
+    return str(path)
+
+
+def _register_brain(state: SidecarState, body: dict) -> tuple[int, Any]:
+    from .brains import register_brain
+
+    name = str(body.get("name") or "").strip()
+    if not name or name == "default" or not _BRAIN_NAME_RE.match(name):
+        return _invalid("非法库名（允许字母、数字、_ . -，且不能是 default）")
+    config_path = body.get("config_path")
+    if body.get("create") or not config_path:
+        config_path = _create_brain_config(name)
+    path = Path(str(config_path)).expanduser()
+    if not path.exists():
+        return _invalid(f"config 不存在: {path}")
+    register_brain(name, str(path), str(body.get("description") or ""))
+    state.brains.reload()
+    return 200, {
+        "ok": True,
+        "name": name,
+        "config_path": str(path.resolve()),
+    }
+
+
+def _remove_brain(state: SidecarState, body: dict) -> tuple[int, Any]:
+    from .brains import unregister_brain
+
+    name = str(body.get("name") or "").strip()
+    if not name:
+        return _invalid("name 不能为空")
+    if not unregister_brain(name):
+        return _not_found(f"brain not found: {name}")
+    state.brains.reload()
+    return 200, {"ok": True, "name": name}
+
+
+def _brain_name(body: dict, qs: dict) -> str:
+    raw = (body or {}).get("brain") or qs.get("brain") or "default"
+    if isinstance(raw, list):
+        raw = raw[0] if raw else "default"
+    return str(raw)
+
+
+def _brain_for(state: SidecarState, body: dict, qs: dict) -> tuple[str, 'Shibei | None']:
+    name = _brain_name(body, qs)
+    if name in ("*", "all"):
+        name = state.brains.default_name
+    try:
+        return name, state.brains.get(name)
+    except KeyError:
+        return name, None
+
+
+def _recall_payload(state: SidecarState, body: dict) -> tuple[int, Any]:
+    """单库或多库（``brain="*"`` / ``brains=[...]``）召回。"""
+    spec = body.get("brain", body.get("brains"))
+    if isinstance(spec, list):
+        wildcard = "*" in spec or "all" in spec
+        names = state.brains.names() if wildcard else [str(n) for n in spec]
+    elif spec in ("*", "all"):
+        names = state.brains.names()
+    elif spec:
+        names = [str(spec)]
+    else:
+        names = [state.brains.default_name]
+
+    pairs: list[tuple[str, Shibei]] = []
+    for name in names:
+        try:
+            pairs.append((name, state.brains.get(name)))
+        except KeyError:
+            return _not_found(f"brain not found: {name}")
+
+    kwargs = {
+        "query": body.get("query"),
+        "message": body.get("message", ""),
+        "limit": int(body.get("limit", 5)),
+        "tag": body.get("tag"),
+        "mode": body.get("mode", "raw"),
+        "memories": bool(body.get("memories", True)),
+        "persona": bool(body.get("persona", False)),
+        "write_hints": bool(body.get("write_hints", False)),
+        "trace": bool(body.get("trace", False)),
+        "full_text": bool(body.get("full_text", False)),
+        "rewrite": body.get("rewrite"),
+        "llm_rewrite": body.get("llm_rewrite"),
+        "expand": body.get("expand"),
+        "fuzzy": body.get("fuzzy"),
+        "synonyms": body.get("synonyms"),
+        "vector": body.get("vector"),
+        "rerank": body.get("rerank"),
+    }
+    if len(pairs) == 1:
+        name, brain = pairs[0]
+        payload = brain.recall(**kwargs)
+        payload["brain"] = name
+        for item in payload.get("results") or []:
+            item.setdefault("brain", name)
+        return 200, payload
+    return 200, recall_federated(pairs, **kwargs)
+
+
+def _dispatch(
+    state: SidecarState,
+    method: str,
+    path: str,
+    qs: dict,
+    body: dict,
+    scope: dict,
+) -> tuple[int, Any]:
     if method == "GET" and path == "/v1/health":
         return 200, {
             "ok": True,
             "version": VERSION,
             "pid": os.getpid(),
             "config_path": state.config_path,
-            "db_path": str(brain.config.db_path_expanded),
+            "db_path": str(state.brain.config.db_path_expanded),
             "started_at": state.started_at,
+            "multi": state.multi,
+            "brains": state.brains.names(),
         }
+    if method == "GET" and path == "/v1/brains":
+        entries = state.brains.describe(
+            with_counts=qs.get("stats", "1") != "0"
+        )
+        allowed = set(scope.get("read") or [])
+        if "*" not in allowed:
+            entries = [entry for entry in entries if entry["name"] in allowed]
+        return 200, {"default": state.brains.default_name, "brains": entries}
+    if method == "POST" and path == "/v1/brains":
+        return _register_brain(state, body)
+    if method == "POST" and path == "/v1/brains/remove":
+        return _remove_brain(state, body)
+    if method == "POST" and path == "/v1/recall":
+        return _recall_payload(state, body)
+
+    raw_brain = body.get("brain", body.get("brains")) or qs.get("brain")
+    if isinstance(raw_brain, list) or raw_brain in ("*", "all"):
+        return _invalid("该接口只支持单个 brain；联邦召回请用 /v1/recall")
+
+    name, brain = _brain_for(state, body, qs)
+    if brain is None:
+        return _not_found(f"brain not found: {name}")
+
     if method == "POST" and path == "/v1/context":
         return 200, brain.context(
             message=body.get("message", ""),
@@ -146,6 +372,29 @@ def _dispatch(state: SidecarState, method: str, path: str, qs: dict, body: dict)
             limit=int(qs.get("limit", 0)),
             offset=int(qs.get("offset", 0)),
         )
+    if method == "POST" and path == "/v1/reindex":
+        source = str(body.get("source") or "").strip()
+        if not source:
+            return _invalid("source 不能为空")
+        return 200, brain.reindex(source)
+    if method == "POST" and path == "/v1/eval/save":
+        return 200, brain.save_eval_sample(
+            query=str(body.get("query") or ""),
+            expect=list(body.get("expect") or []),
+            path=body.get("path") or None,
+        )
+    if method == "GET" and path == "/v1/import/report":
+        return 200, brain.import_report(
+            limit=int(qs.get("limit", 0)),
+            offset=int(qs.get("offset", 0)),
+        )
+    if method == "GET" and path == "/v1/chunks":
+        return 200, brain.list_chunks(
+            limit=int(qs.get("limit", 200)),
+            offset=int(qs.get("offset", 0)),
+            source=qs.get("source") or None,
+            tag=qs.get("tag") or None,
+        )
     if method == "POST" and path == "/v1/dream":
         return 200, brain.dream(
             housekeeping=body.get("housekeeping"),
@@ -176,9 +425,10 @@ def _make_handler(state: SidecarState):
         def log_message(self, fmt, *args):
             return
 
-        def _token_ok(self) -> bool:
+        def _scope(self) -> 'dict | None':
             header = self.headers.get("Authorization", "")
-            return header == f"Bearer {state.token}"
+            token = header[7:] if header.startswith("Bearer ") else ""
+            return state.scope_for(token)
 
         def _read_body(self) -> dict:
             length = int(self.headers.get("Content-Length", "0") or 0)
@@ -201,7 +451,8 @@ def _make_handler(state: SidecarState):
             self.wfile.write(blob)
 
         def _handle(self, method: str):
-            if not self._token_ok():
+            scope = self._scope()
+            if scope is None:
                 self._send(*_unauthorized())
                 return
             parsed = urlparse(self.path)
@@ -212,12 +463,27 @@ def _make_handler(state: SidecarState):
             except (ValueError, json.JSONDecodeError) as exc:
                 self._send(*_invalid(str(exc)))
                 return
+            if not _authorize(state, scope, method, path, body, qs):
+                self._send(
+                    403,
+                    {"error": {"code": "forbidden", "message": "token 无权访问该库"}},
+                )
+                return
             try:
-                if path in WRITE_PATHS:
-                    with state.write_lock:
-                        status, payload = _dispatch(state, method, path, qs, body)
+                if path in REGISTRY_PATHS:
+                    with state.registry_lock:
+                        status, payload = _dispatch(
+                            state, method, path, qs, body, scope
+                        )
+                elif path in WRITE_PATHS:
+                    with state.lock_for(_brain_name(body, qs)):
+                        status, payload = _dispatch(
+                            state, method, path, qs, body, scope
+                        )
                 else:
-                    status, payload = _dispatch(state, method, path, qs, body)
+                    status, payload = _dispatch(
+                        state, method, path, qs, body, scope
+                    )
             except ValueError as exc:
                 self._send(*_invalid(str(exc)))
                 return
@@ -240,9 +506,10 @@ def start_server(
     host: str = "127.0.0.1",
     port: int = 0,
     token: str | None = None,
+    multi: bool = False,
 ) -> tuple[ThreadingHTTPServer, dict]:
     """启动 sidecar（后台线程）。调用方负责 shutdown。"""
-    state = SidecarState(config_path, token or secrets.token_hex(32))
+    state = SidecarState(config_path, token or secrets.token_hex(32), multi=multi)
     httpd = ThreadingHTTPServer((host, port), _make_handler(state))
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
@@ -261,6 +528,8 @@ def start_server(
         "pid": os.getpid(),
         "started_at": state.started_at,
         "version": VERSION,
+        "multi": multi,
+        "brains": state.brains.names(),
         "thread": thread,
     }
     return httpd, info
@@ -283,8 +552,7 @@ def write_run_file(config_path: str, info: dict) -> Path:
     return path
 
 
-def read_run_file(config_path: str) -> dict | None:
-    path = run_file_for(config_path)
+def _read_info(path: Path) -> dict | None:
     if not path.exists():
         return None
     try:
@@ -297,11 +565,56 @@ def read_run_file(config_path: str) -> dict | None:
     return data
 
 
+def write_shared_run_file(info: dict) -> Path:
+    path = shared_run_file()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "pid": info["pid"],
+        "host": info["host"],
+        "port": info["port"],
+        "token": info["token"],
+        "config_path": info["config_path"],
+        "started_at": info.get("started_at", ""),
+        "version": info.get("version", VERSION),
+        "multi": info.get("multi", False),
+        "brains": info.get("brains", []),
+    }
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    os.chmod(path, 0o600)
+    return path
+
+
+def read_shared_run_file() -> dict | None:
+    return _read_info(shared_run_file())
+
+
+def read_run_file(config_path: str) -> dict | None:
+    return _read_info(run_file_for(config_path))
+
+
 def stop_sidecar(config_path: str) -> None:
     import signal
 
     info = read_run_file(config_path)
     path = run_file_for(config_path)
+    if info:
+        pid = int(info.get("pid") or 0)
+        if pid and pid != os.getpid():
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
+
+
+def stop_shared_sidecar() -> None:
+    import signal
+
+    info = read_shared_run_file()
+    path = shared_run_file()
     if info:
         pid = int(info.get("pid") or 0)
         if pid and pid != os.getpid():
@@ -335,24 +648,35 @@ def main(argv: list[str] | None = None) -> None:
     )
     parser.add_argument("--daemon", action="store_true")
     parser.add_argument("--stop", action="store_true")
+    parser.add_argument(
+        "--all",
+        action="store_true",
+        help="一个进程服务 ~/.shibei/brains.yaml 里的所有库",
+    )
     args = parser.parse_args(argv)
     config_path = str(Path(args.config).expanduser().resolve())
     if args.stop:
-        stop_sidecar(config_path)
+        if args.all:
+            stop_shared_sidecar()
+        else:
+            stop_sidecar(config_path)
         return
+    run_dir = shared_run_dir() if args.all else run_dir_for(config_path)
     if args.daemon:
         _daemonize()
-        log_path = run_dir_for(config_path)
-        log_path.mkdir(parents=True, exist_ok=True)
-        log_file = open(log_path / "sidecar.log", "a", encoding="utf-8")
+        run_dir.mkdir(parents=True, exist_ok=True)
+        log_file = open(run_dir / "sidecar.log", "a", encoding="utf-8")
         os.dup2(log_file.fileno(), 1)
         os.dup2(log_file.fileno(), 2)
         with open(os.devnull, "rb") as devnull:
             os.dup2(devnull.fileno(), 0)
     httpd = None
     try:
-        httpd, info = start_server(config_path)
-        write_run_file(config_path, info)
+        httpd, info = start_server(config_path, multi=args.all)
+        if args.all:
+            write_shared_run_file(info)
+        else:
+            write_run_file(config_path, info)
         info["thread"].join()
     except KeyboardInterrupt:
         pass
@@ -367,7 +691,7 @@ def main(argv: list[str] | None = None) -> None:
             except Exception:
                 pass
         try:
-            run_file_for(config_path).unlink()
+            (shared_run_file() if args.all else run_file_for(config_path)).unlink()
         except FileNotFoundError:
             pass
 
