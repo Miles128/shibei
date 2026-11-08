@@ -25,8 +25,9 @@ echo "📦 安装依赖..."
 if [ ! -x .venv/bin/python ]; then
     uv venv .venv --python "$PYTHON_BIN" --quiet
 fi
-# 公共召回原语先装，主包依赖它
-uv pip install --python .venv/bin/python -e packages/ragkit --quiet
+# 公共召回原语先装（独立项目），主包依赖它
+uv pip install --python .venv/bin/python \
+    "shibei-ragkit @ git+https://github.com/Miles128/shibei-ragkit.git@v0.1.0" --quiet
 uv pip install --python .venv/bin/python -e ".[all,vector]" --quiet
 
 # 初始化配置

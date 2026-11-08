@@ -21,11 +21,11 @@ classifiers = [
 dependencies = [
     "pyyaml>=6.0",
     "jieba>=0.42",
-    "ragkit>=0.1.0",
+    "shibei-ragkit>=0.1.0",
 ]
 
 [tool.uv.sources]
-ragkit = { path = "packages/ragkit", editable = true }
+shibei-ragkit = { git = "https://github.com/Miles128/shibei-ragkit.git", tag = "v0.1.0" }
 
 [project.scripts]
 shibei = "shibei.cli:main"
