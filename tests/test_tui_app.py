@@ -8,6 +8,7 @@ from textual.widgets import DataTable, Input, Static  # noqa: E402
 
 from shibei.tui.app import RecallApp  # noqa: E402
 from shibei.tui.browse import BrowseScreen  # noqa: E402
+from shibei.tui.imports import ImportReportScreen  # noqa: E402
 from shibei.tui.session import RecallSession  # noqa: E402
 
 from tests.test_tui_session import PAYLOAD, FakeClient  # noqa: E402
@@ -85,3 +86,25 @@ async def test_browse_screen_lists_all_chunks():
         detail = str(screen.query_one("#chunk-detail", Static).content)
         assert "Redis" in detail
         assert client.chunk_calls
+
+
+@pytest.mark.asyncio
+async def test_import_report_screen_lists_files():
+    session = RecallSession(client=FakeClient(PAYLOAD))
+    app = RecallApp(session=session)
+    async with app.run_test(size=(140, 40)) as pilot:
+        app.action_imports()
+        await pilot.pause()
+
+        screen = app.screen
+        assert isinstance(screen, ImportReportScreen)
+
+        table = screen.query_one("#report-files", DataTable)
+        for _ in range(50):
+            if table.row_count:
+                break
+            await pilot.pause(0.05)
+
+        assert table.row_count == 2
+        summary = str(screen.query_one("#report-summary", Static).content)
+        assert "失败 1" in summary

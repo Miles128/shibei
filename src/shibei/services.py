@@ -178,6 +178,24 @@ class Shibei:
         )
         return {"path": str(target), "queries": len(queries), "updated": updated}
 
+    def import_report(self, limit: int = 0, offset: int = 0) -> dict:
+        """最近一次导入的结构化报告（失败文件 / 每文件 chunk 数）。"""
+        import json
+
+        path = self.config.db_path_expanded / "import_report.json"
+        if not path.exists():
+            return {"generated_at": None, "summary": {}, "files": []}
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {"generated_at": None, "summary": {}, "files": []}
+        files = list(data.get("files") or [])
+        if limit:
+            files = files[offset : offset + limit]
+        data["files"] = files
+        data["total"] = len(data.get("files") or [])
+        return data
+
     def list_sources(self, limit: int = 0, offset: int = 0) -> dict:
         from .importer import list_sources
         return list_sources(self.config, limit=limit, offset=offset)

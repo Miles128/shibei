@@ -171,6 +171,11 @@ class RecallSession:
 
     # ---------- 运维动作 ----------
 
+    def import_report(self) -> dict:
+        if self._client is None:
+            raise RuntimeError("sidecar 未连接")
+        return self._client.import_report()
+
     def reindex(self, source: str) -> dict:
         if self._client is None:
             raise RuntimeError("sidecar 未连接")

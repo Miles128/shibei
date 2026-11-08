@@ -20,6 +20,7 @@ from textual.containers import Horizontal, Vertical
 from textual.widgets import Button, DataTable, Footer, Header, Input, RichLog, Static
 
 from .browse import BrowseScreen
+from .imports import ImportReportScreen
 from .session import FLAG_HINTS, FLAGS, RecallSession
 
 FLAG_VARIANT = {None: "default", True: "primary", False: "error"}
@@ -48,6 +49,7 @@ class RecallApp(App):
         Binding("slash", "focus_query", "输入"),
         Binding("a", "browse", "全部片段"),
         Binding("f2", "browse", "全部片段"),
+        Binding("i", "imports", "导入诊断"),
         Binding("b", "cycle_brain", "切换库"),
         Binding("ctrl+r", "rerun", "重跑"),
         Binding("ctrl+s", "save_eval", "存评测"),
@@ -294,6 +296,12 @@ class RecallApp(App):
             self._set_error("sidecar 尚未就绪")
             return
         self.push_screen(BrowseScreen(self.session))
+
+    def action_imports(self) -> None:
+        if self.session is None:
+            self._set_error("sidecar 尚未就绪")
+            return
+        self.push_screen(ImportReportScreen(self.session))
 
     def action_cycle_brain(self) -> None:
         session = self.session

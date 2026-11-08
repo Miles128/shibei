@@ -47,6 +47,17 @@ class FakeClient:
         self.calls.append(kwargs)
         return self.payload
 
+    def import_report(self) -> dict:
+        return {
+            "generated_at": "2026-11-08T10:00:00Z",
+            "summary": {"failed": 1, "skipped": 0, "chunks": 1},
+            "files": [
+                {"path": "/notes/a.md", "status": "ok", "chunks": 1},
+                {"path": "/notes/b.md", "status": "failed", "chunks": 0,
+                 "error": "解码失败"},
+            ],
+        }
+
     def reindex(self, source: str, timeout: float = 300) -> dict:
         self.reindexed = [source]
         return {"files": 1, "chunks": 1}

@@ -6,8 +6,10 @@
 支持格式：md, txt, docx, xlsx, csv（配置化扩展名）。
 """
 
+import json
 import logging
 import os
+from datetime import datetime, timezone
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -108,6 +110,7 @@ class Importer:
         # parent_text/parent_id 在 parent_window=0 时为空字符串
         # summary 默认空字符串，LLM 启用且调用成功时填充
         chunks_data: list[tuple[str, str, str, str, str, str, str]] = []
+        details: list[dict] = []
         ck = self.cfg.chunking
 
         def _parse_one(path: Path) -> tuple[Path, str] | tuple[Path, Exception]:
@@ -133,6 +136,12 @@ class Importer:
             if isinstance(parsed, Exception):
                 warnings.append(f"文件解析失败: {f} ({parsed})")
                 logger.warning("文件解析失败: %s (%s)", f, parsed)
+                details.append({
+                    "path": str(f),
+                    "status": "failed",
+                    "chunks": 0,
+                    "error": str(parsed),
+                })
                 if progress is not None:
                     progress(idx, len(changed))
                 continue
@@ -145,6 +154,7 @@ class Importer:
                 and ck.parent_window <= 0
                 and str(f).lower().endswith((".md", ".markdown"))
             )
+            start_count = len(chunks_data)
             if structural:
                 from ragkit.chunking import chunk_markdown
 
@@ -160,6 +170,13 @@ class Importer:
                     chunks_data.append(
                         (slug, str(f), ",".join(tags), text, "", "", "")
                     )
+                details.append({
+                    "path": str(f),
+                    "status": "ok",
+                    "chunks": len(chunks_data) - start_count,
+                    "tags": tags,
+                    "structured": True,
+                })
                 if progress is not None:
                     progress(idx, len(changed))
                 continue
@@ -189,8 +206,22 @@ class Importer:
                         (slug, str(f), ",".join(tags), chunk_text_str, "", "", "")
                     )
 
+            details.append({
+                "path": str(f),
+                "status": "ok",
+                "chunks": len(chunks_data) - start_count,
+                "tags": tags,
+                "structured": False,
+            })
             if progress is not None:
                 progress(idx, len(changed))
+
+        changed_paths = {str(item) for item in changed}
+        for path in current_files:
+            if path not in changed_paths:
+                details.append({"path": path, "status": "skipped", "chunks": 0})
+        for path in to_remove:
+            details.append({"path": str(path), "status": "removed", "chunks": 0})
 
         # 为每个 chunk 生成一句话中文摘要（LLM 失败时降级为空字符串）
         # chunks_data 元组已是 7 字段：(source, file_path, tags, content, parent_text, parent_id, summary_placeholder)
@@ -250,6 +281,27 @@ class Importer:
         }
         if warnings:
             result["warnings"] = warnings
+
+        failed_count = sum(1 for item in details if item["status"] == "failed")
+        report = {
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "summary": {
+                "files": result["files"],
+                "chunks": result["chunks"],
+                "skipped": result["skipped"],
+                "removed": result["removed"],
+                "deduped": result["deduped"],
+                "failed": failed_count,
+            },
+            "files": details,
+        }
+        report_path = self.cfg.db_path_expanded / "import_report.json"
+        report_path.write_text(
+            json.dumps(report, ensure_ascii=False, indent=1),
+            encoding="utf-8",
+        )
+        result["report_path"] = str(report_path)
+        result["failed"] = failed_count
         return result
 
     def _import_bm25(self, chunks_data: list, sources_to_clear: list[str],

@@ -334,6 +334,10 @@ class ShibeiClient:
     def list_sources(self, limit: int = 0, offset: int = 0) -> dict:
         return self._get("/v1/sources", {"limit": limit, "offset": offset})
 
+    def import_report(self, limit: int = 0, offset: int = 0) -> dict:
+        """最近一次导入报告（失败文件、每文件 chunk 数）。"""
+        return self._get("/v1/import/report", {"limit": limit, "offset": offset})
+
     def reindex(self, source: str, timeout: float = 300) -> dict:
         """强制重建单个文件（不影响其他文件）。"""
         return self._post("/v1/reindex", {"source": source}, timeout=timeout)

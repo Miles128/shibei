@@ -383,6 +383,11 @@ def _dispatch(
             expect=list(body.get("expect") or []),
             path=body.get("path") or None,
         )
+    if method == "GET" and path == "/v1/import/report":
+        return 200, brain.import_report(
+            limit=int(qs.get("limit", 0)),
+            offset=int(qs.get("offset", 0)),
+        )
     if method == "GET" and path == "/v1/chunks":
         return 200, brain.list_chunks(
             limit=int(qs.get("limit", 200)),

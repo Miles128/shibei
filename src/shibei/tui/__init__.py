@@ -6,6 +6,7 @@
 
 from .app import RecallApp, main
 from .browse import BrowseScreen
+from .imports import ImportReportScreen
 from .session import RecallSession
 
-__all__ = ["RecallApp", "BrowseScreen", "RecallSession", "main"]
+__all__ = ["RecallApp", "BrowseScreen", "ImportReportScreen", "RecallSession", "main"]
