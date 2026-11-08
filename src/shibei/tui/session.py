@@ -10,13 +10,14 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 # 可三态切换的检索开关：None=跟随 config，True=强制开，False=强制关
-FLAGS = ("rewrite", "expand", "fuzzy", "vector", "rerank", "memories")
+FLAGS = ("rewrite", "expand", "fuzzy", "vector", "rerank", "mmr", "memories")
 FLAG_HINTS = {
     "rewrite": "规则改写",
     "expand": "同义词/模糊扩展",
     "fuzzy": "编辑距离兜底",
     "vector": "向量混合",
     "rerank": "cross-encoder 重排",
+    "mmr": "MMR 去重",
     "memories": "对话记忆",
 }
 FLAG_MARKS = {None: "·", True: "✓", False: "✗"}
@@ -134,6 +135,7 @@ class RecallSession:
                 memories=flags["memories"] is not False,
                 trace=True,
                 full_text=True,
+                mmr=flags["mmr"] is True,
                 rewrite=flags["rewrite"],
                 expand=flags["expand"],
                 fuzzy=flags["fuzzy"],
@@ -202,7 +204,7 @@ class RecallSession:
     def summary_line(self) -> str:
         data = self.state.result
         if data is None:
-            return "输入查询后回车；1-6 切换检索开关"
+            return "输入查询后回车；1-7 切换检索开关"
         trace = data.get("trace") or {}
         elapsed = float(trace.get("total_ms") or 0)
         parts = []
@@ -269,6 +271,7 @@ class RecallSession:
             + (f' · 重排 {item.get("rerank_score")}' if item.get("rerank_score") is not None else ""),
             f"路由 {routes}",
             f"命中词 {matched}",
+            f"分节 {item.get('section') or '-'}",
             f'tags {item.get("tags") or "-"}',
         ]
         body = str(item.get("text") or "").strip()

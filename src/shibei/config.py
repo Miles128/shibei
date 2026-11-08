@@ -23,6 +23,8 @@ class ChunkingConfig:
     parent_window: int = 0  # parent 包含的 child 数（0=禁用 parent-child）
     # 中文句子边界（用于不切断词的切分）
     sentence_boundaries: str = "。！？!?\n"
+    # Markdown 结构化分块：保留标题层级、代码块/表格原子化
+    structural: bool = True
 
 
 @dataclass

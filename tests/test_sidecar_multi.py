@@ -286,3 +286,55 @@ def test_invalid_brain_name_rejected(multi):
             {"name": "bad name!", "create": True},
         )
     assert exc.value.code == 400
+
+
+def test_remote_brain_proxy_and_federation(multi):
+    from shibei.federate import recall_federated
+    from shibei.remote import RemoteBrain
+
+    info, cfg_a, _ = multi
+    remote = RemoteBrain("noteai", info["base_url"], info["token"])
+
+    out = remote.recall(query="Redis", trace=True)
+    assert out["results"]
+    assert out["results"][0]["brain"] == "noteai"
+
+    local = Shibei(str(cfg_a))
+    fed = recall_federated([("noteai", remote), ("local", local)], query="Redis")
+    assert fed["federated"] is True
+    assert set(fed["brains"]) == {"noteai", "local"}
+    assert fed["results"]
+
+
+def test_sidecar_routes_registered_remote(multi, tmp_path, monkeypatch):
+    info, cfg_a, _ = multi
+    registry = tmp_path / "remote_brains.yaml"
+    registry.write_text(
+        yaml.safe_dump({
+            "noteai": {
+                "url": info["base_url"],
+                "token": info["token"],
+            },
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("SHIBEI_BRAINS", str(registry))
+
+    from shibei.sidecar import start_server
+
+    agg, agg_info = start_server(str(cfg_a), multi=True)
+    try:
+        _, body = _http(
+            agg_info["base_url"], agg_info["token"], "POST", "/v1/recall",
+            {"brain": "noteai", "query": "Redis"},
+        )
+        assert body["results"][0]["brain"] == "noteai"
+
+        _, fed = _http(
+            agg_info["base_url"], agg_info["token"], "POST", "/v1/recall",
+            {"brain": "*", "query": "Redis"},
+        )
+        assert set(fed["brains"]) == {"default", "noteai"}
+    finally:
+        agg.shutdown()
+        agg.server_close()

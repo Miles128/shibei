@@ -50,9 +50,13 @@ def load_brains(path: 'Path | None' = None) -> dict[str, dict]:
     for name, value in data.items():
         if isinstance(value, str):
             entries[str(name)] = {"config": value}
-        elif isinstance(value, dict) and value.get("config"):
+        elif isinstance(value, dict) and (value.get("config") or value.get("url")):
             entries[str(name)] = {
-                "config": str(value["config"]),
+                "config": str(value.get("config") or ""),
+                "url": str(value.get("url") or ""),
+                "token": str(value.get("token") or ""),
+                "brain": str(value.get("brain") or ""),
+                "timeout": float(value.get("timeout") or 30.0),
                 "description": str(value.get("description") or ""),
             }
     return entries
@@ -83,6 +87,28 @@ def register_brain(
     entries = load_brains(path)
     entries[name] = {
         "config": str(Path(config_path).expanduser().resolve()),
+        "description": description,
+    }
+    return save_brains(entries, path)
+
+
+def register_remote(
+    name: str,
+    url: str,
+    token: str = "",
+    brain: str = "",
+    description: str = "",
+    path: 'Path | None' = None,
+) -> Path:
+    if not name or not url:
+        raise ValueError("name 与 url 都不能为空")
+    entries = load_brains(path)
+    entries[name] = {
+        "config": "",
+        "url": url,
+        "token": token,
+        "brain": brain,
+        "timeout": 30.0,
         "description": description,
     }
     return save_brains(entries, path)
@@ -131,7 +157,8 @@ class Brains:
                 (
                     name
                     for name, entry in entries.items()
-                    if _abs(entry["config"]) == self.default_config
+                    if entry.get("config")
+                    and _abs(entry["config"]) == self.default_config
                 ),
                 None,
             )
@@ -168,7 +195,9 @@ class Brains:
         if name == "default":
             name = self._default_name
         entry = self._entries.get(name)
-        return _abs(entry["config"]) if entry else None
+        if not entry or not entry.get("config"):
+            return None
+        return _abs(entry["config"])
 
     def config_path_for(self, config_path: str) -> 'str | None':
         """反查：这个配置文件属于哪个 brain。"""
@@ -192,6 +221,8 @@ class Brains:
         entry = self._entries.get(name)
         if entry is None:
             raise KeyError(name)
+        if entry.get("url"):
+            return self._get_remote(name, entry)
         key = _abs(entry["config"])
         with self._lock:
             instance = self._instances.get(name)
@@ -204,6 +235,24 @@ class Brains:
                 from .services import Shibei
 
                 instance = Shibei(entry["config"])
+                self._instances[name] = instance
+                self._instance_paths[name] = key
+            return instance
+
+    def _get_remote(self, name: str, entry: dict):
+        from .remote import RemoteBrain
+
+        key = "remote:" + entry["url"]
+        with self._lock:
+            instance = self._instances.get(name)
+            if instance is None or self._instance_paths.get(name) != key:
+                instance = RemoteBrain(
+                    name=name,
+                    url=entry["url"],
+                    token=entry.get("token") or "",
+                    brain=entry.get("brain") or "",
+                    timeout=float(entry.get("timeout") or 30.0),
+                )
                 self._instances[name] = instance
                 self._instance_paths[name] = key
             return instance
@@ -229,7 +278,22 @@ class Brains:
         out: list[dict] = []
         for name in self.names():
             entry = self._entries[name]
-            info: dict = {
+            if entry.get("url"):
+                info = {
+                    "name": name,
+                    "remote": True,
+                    "url": entry["url"],
+                    "description": entry.get("description", ""),
+                    "default": name == self.default_name,
+                }
+                try:
+                    if with_counts:
+                        info["chunks"] = self.get(name).list_chunks(limit=0)["total"]
+                except Exception as exc:  # noqa: BLE001
+                    info["error"] = str(exc)
+                out.append(info)
+                continue
+            info = {
                 "name": name,
                 "config_path": _abs(entry["config"]),
                 "description": entry.get("description", ""),

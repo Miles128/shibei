@@ -11,6 +11,7 @@
 source .venv/bin/activate
 vim config.yaml                 # 改 sources 为你的文档目录
 shibei import                   # 增量导入
+shibei watch --interval 10      # 可选：轮询监听 sources
 shibei search "关键词"           # 搜索
 shibei serve                    # 启动 MCP server
 ```
@@ -22,7 +23,7 @@ shibei serve                    # 启动 MCP server
 | 接口 | 命令 | 谁用 |
 |------|------|------|
 | Sidecar | `shibei sidecar --daemon` | 常驻内核 |
-| CLI | `shibei context/search/import/list/remember` | 人 |
+| CLI | `shibei context/search/import/list/remember/watch` | 人 |
 | TUI | `shibei ui` | 人（召回诊断） |
 | MCP | `shibei serve` | Cursor / Claude 等 |
 | DSH 插件 | `packages/dsh-shibei` | DeepSeek Harness |
@@ -248,7 +249,7 @@ shibei ui                       # 自动复用/拉起 sidecar
 | 按键 | 动作 |
 |------|------|
 | `回车` | 执行召回 |
-| `1`–`6` | 切换 rewrite / expand / fuzzy / vector / rerank / memories（三态：`·` 跟随配置 / `✓` 强制开 / `✗` 强制关） |
+| `1`–`7` | 切换 rewrite / expand / fuzzy / vector / rerank / mmr / memories（三态：`·` 跟随配置 / `✓` 强制开 / `✗` 强制关） |
 | `ctrl+r` | 用当前开关重跑 |
 | `↑↓` | 移动结果，右侧实时刷新 trace 与详情 |
 | `o` | 用 `$EDITOR` 打开当前文件 |
@@ -276,6 +277,7 @@ shibei ui                       # 自动复用/拉起 sidecar
 ```bash
 shibei brains add work ~/work/shibei.yaml --description 工作
 shibei brains add life ~/.shibei/profiles/life.yaml
+shibei brains add noteai --url http://127.0.0.1:47821 --token xxx   # 远程库
 shibei brains list
 
 shibei sidecar --daemon --all       # 一个进程、一个端口、多个库
@@ -300,6 +302,7 @@ POST /v1/recall
 ```
 
 `GET /v1/brains` 返回每个库的 config 路径、db 路径和 chunk 数。
+远程库（`url`）不需要本地 config，按同一份 `/v1/recall` 信封转发，因此可以跨进程/跨项目联邦。
 写操作（`/v1/remember`、`/v1/import` 等）只作用于指定的库，写锁也是按库隔离的。
 
 **联邦召回按名次融合，不比较分数。** BM25 的 IDF 依赖各自语料，两个库的 score 不可比，
@@ -474,7 +477,7 @@ python scripts/eval_retrieval.py --modes bm25,hybrid,hnsw --min-scores 0.5,0.6
 
 ## 依赖
 
-- Python ≥ 3.9（CI 覆盖 3.10–3.12；本地向量后端 fastembed 需 ≥ 3.10）
+- Python ≥ 3.12（CI 覆盖 3.12；`ragkit` 本身兼容 3.10+）
 - uv（安装脚本与虚拟环境管理）
 - pyyaml
 - python-docx（可选，docx 支持）

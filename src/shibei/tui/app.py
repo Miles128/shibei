@@ -57,7 +57,8 @@ class RecallApp(App):
         Binding("3", "toggle_flag('fuzzy')", "模糊"),
         Binding("4", "toggle_flag('vector')", "向量"),
         Binding("5", "toggle_flag('rerank')", "重排"),
-        Binding("6", "toggle_flag('memories')", "记忆"),
+        Binding("6", "toggle_flag('mmr')", "去重"),
+        Binding("7", "toggle_flag('memories')", "记忆"),
         Binding("q", "quit", "退出"),
     ]
 
@@ -92,7 +93,7 @@ class RecallApp(App):
                 yield DataTable(id="results", cursor_type="row", zebra_stripes=True)
                 yield DataTable(id="memories", cursor_type="row", zebra_stripes=True)
             with Vertical(id="right"):
-                yield Static("输入查询后回车；1-6 切换检索开关", id="summary")
+                yield Static("输入查询后回车；1-7 切换检索开关", id="summary")
                 yield RichLog(id="trace", markup=True, wrap=False)
                 yield Static("（无选中结果）", id="detail", markup=False)
         yield Footer()

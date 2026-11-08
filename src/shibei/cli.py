@@ -80,16 +80,51 @@ def cmd_tokens(args):
         )
 
 
+def cmd_watch(args):
+    """可选：轮询 sources，做增量导入（无额外依赖）。"""
+    import time
+
+    client = ShibeiClient(args.resolved_config)
+    interval = max(float(args.interval), 1.0)
+    print(f"👀 监听中：每 {interval:g}s 检查一次（Ctrl-C 退出）")
+    try:
+        while True:
+            result = client.import_all(dirs=args.dirs, full=False, timeout=600)
+            if result.get("files"):
+                print(
+                    f'  {time.strftime("%H:%M:%S")} 导入 {result["files"]} 文件'
+                    f' / {result["chunks"]} chunks，删除 {result.get("removed", 0)} 个旧源'
+                )
+            time.sleep(interval)
+    except KeyboardInterrupt:
+        print("\n停止监听")
+
+
 def cmd_brains(args):
     """多库注册表管理。"""
     from .brains import brains_file, load_brains, register_brain, unregister_brain
 
     action = getattr(args, "brains_cmd", None) or "list"
     if action == "add":
-        path = register_brain(
-            args.name, args.config, getattr(args, "description", "") or ""
-        )
-        print(f"✅ 已注册 brain '{args.name}' → {path}")
+        if getattr(args, "url", None):
+            from .brains import register_remote
+
+            path = register_remote(
+                args.name,
+                args.url,
+                token=getattr(args, "token", "") or "",
+                brain=getattr(args, "remote_brain", "") or "",
+                description=getattr(args, "description", "") or "",
+            )
+            print(f"✅ 已注册远程 brain '{args.name}' → {path}")
+        else:
+            if not getattr(args, "config", None):
+                print("❌ 需要 config 路径，或用 --url 注册远程库")
+                sys.exit(1)
+            path = register_brain(
+                args.name, args.config, getattr(args, "description", "") or ""
+            )
+            print(f"✅ 已注册 brain '{args.name}' → {path}")
         print("   下一步: shibei sidecar --daemon --all")
         return
     if action == "remove":
@@ -109,7 +144,9 @@ def cmd_brains(args):
     for name, entry in entries.items():
         desc = entry.get("description") or ""
         suffix = f"  # {desc}" if desc else ""
-        print(f"  {name:<12} {entry['config']}{suffix}")
+        target = entry.get("url") or entry.get("config") or "-"
+        kind = "remote" if entry.get("url") else "local"
+        print(f"  {name:<12} [{kind}] {target}{suffix}")
 
 
 def cmd_context(args):
@@ -654,6 +691,11 @@ def main():
     p_side.add_argument("--all", action="store_true",
                         help="一个进程服务 brains 注册表里的所有库（需先 shibei brains add）")
 
+    # watch（可选：轮询增量导入）
+    p_watch = sub.add_parser("watch", help="可选：轮询 sources 做增量导入")
+    p_watch.add_argument("--interval", type=float, default=10.0, help="轮询间隔秒数")
+    p_watch.add_argument("--dirs", default=None, help="逗号分隔目录，默认用 config.sources")
+
     # ui
     p_ui = sub.add_parser("ui", help="召回诊断台（Textual TUI）")
     p_ui.add_argument("--brain", default=None, help="启动时使用的库名")
@@ -662,9 +704,12 @@ def main():
     p_brains = sub.add_parser("brains", help="管理多库注册表")
     p_brains_sub = p_brains.add_subparsers(dest="brains_cmd")
     p_brains_sub.add_parser("list", help="列出已注册的库")
-    p_add = p_brains_sub.add_parser("add", help="注册一个库")
+    p_add = p_brains_sub.add_parser("add", help="注册一个库（本地或远程）")
     p_add.add_argument("name", help="库名（如 work）")
-    p_add.add_argument("config", help="该库的 config.yaml 路径")
+    p_add.add_argument("config", nargs="?", help="本地库的 config.yaml 路径")
+    p_add.add_argument("--url", default=None, help="远程 daemon 地址（如 http://127.0.0.1:47821）")
+    p_add.add_argument("--token", default="", help="远程 daemon 的 token")
+    p_add.add_argument("--remote-brain", default="", help="远端多库 daemon 里的库名")
     p_add.add_argument("--description", default="", help="备注")
     p_remove = p_brains_sub.add_parser("remove", help="移除一个库")
     p_remove.add_argument("name", help="库名")
@@ -882,6 +927,7 @@ def main():
         "serve": cmd_serve,
         "sidecar": cmd_sidecar,
         "ui": cmd_ui,
+        "watch": cmd_watch,
         "context": cmd_context,
         "search": cmd_search,
         "import": cmd_import,

@@ -8,6 +8,7 @@ FTS5 存分词语料做索引，原文存独立表。
 """
 
 import logging
+import re
 import sqlite3
 import struct
 from pathlib import Path
@@ -19,6 +20,20 @@ if TYPE_CHECKING:
     from .config import VectorConfig
 
 logger = logging.getLogger(__name__)
+
+_SECTION_RE = re.compile(r"^#{1,6}\s+(.+)$")
+
+
+def extract_section(content: str) -> str:
+    """从 chunk 首个标题行提取 section；没有标题返回空串。"""
+    for line in (content or "").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        match = _SECTION_RE.match(line)
+        return match.group(1).strip() if match else ""
+    return ""
+
 
 
 DB_NAME = "fts5.db"
@@ -477,6 +492,7 @@ class BM25Index:
             "score": round(-rank, 3) if rank else 0.0,
             "tags": tags,
             "text": content[:300],
+            "section": extract_section(content),
         }
         if parent_text:
             item["parent_text"] = parent_text[:800]
@@ -503,6 +519,7 @@ class BM25Index:
                 "tags": row[3],
                 "text": row[4] or "",
                 "parent_text": row[5] or "",
+                "section": extract_section(row[4] or ""),
             }
         return out
 
@@ -684,6 +701,7 @@ class BM25Index:
                 "tags": row[3] or "",
                 "text": row[4] or "",
                 "parent_text": row[5] or "",
+                "section": extract_section(row[4] or ""),
             }
             for row in rows
         ]

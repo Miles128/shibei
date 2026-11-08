@@ -120,6 +120,30 @@ class Importer:
             content = parsed
             tags = self.tagger.infer(f, content)
             slug = str(f)
+            structural = (
+                ck.structural
+                and ck.parent_window <= 0
+                and str(f).lower().endswith((".md", ".markdown"))
+            )
+            if structural:
+                from ragkit.chunking import chunk_markdown
+
+                ratio = (ck.overlap / ck.max_chars) if ck.max_chars else 0.0
+                for item in chunk_markdown(
+                    content,
+                    max_chars=ck.max_chars,
+                    overlap_ratio=max(ratio, 0.0),
+                ):
+                    section = item.get("section_title") or ""
+                    body = item.get("content") or ""
+                    text = f"## {section}\n\n{body}" if section else body
+                    chunks_data.append(
+                        (slug, str(f), ",".join(tags), text, "", "", "")
+                    )
+                if progress is not None:
+                    progress(idx, len(changed))
+                continue
+
             chunks = chunk_text(
                 content,
                 max_chars=ck.max_chars,

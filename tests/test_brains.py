@@ -9,6 +9,7 @@ from shibei.brains import (
     Brains,
     load_brains,
     register_brain,
+    register_remote,
     save_brains,
     unregister_brain,
 )
@@ -117,3 +118,23 @@ def test_describe_reports_chunks(tmp_path):
     assert described[0]["name"] == "default"
     assert described[0]["chunks"] == 1
     assert described[0]["default"] is True
+
+
+def test_register_remote_entry(tmp_path):
+    cfg = make_brain(tmp_path, "work", "工作笔记")
+    registry = tmp_path / "brains.yaml"
+    register_remote(
+        "noteai", "http://127.0.0.1:9", token="t", brain="default", path=registry
+    )
+
+    brains = Brains(str(cfg), registry=registry)
+    assert "noteai" in brains.names()
+    assert brains.path_of("noteai") is None
+
+    from shibei.remote import RemoteBrain
+
+    assert isinstance(brains.get("noteai"), RemoteBrain)
+
+    described = {item["name"]: item for item in brains.describe(with_counts=False)}
+    assert described["noteai"]["remote"] is True
+    assert described["noteai"]["url"] == "http://127.0.0.1:9"
