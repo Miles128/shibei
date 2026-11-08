@@ -251,6 +251,7 @@ shibei ui                       # 自动复用/拉起 sidecar
 | `回车` | 执行召回 |
 | `1`–`7` | 切换 rewrite / expand / fuzzy / vector / rerank / mmr / memories（三态：`·` 跟随配置 / `✓` 强制开 / `✗` 强制关） |
 | `ctrl+r` | 用当前开关重跑 |
+| `ctrl+s` | 把当前查询与 top 结果存为评测样本（`~/.shibei/eval/golden.yaml`） |
 | `↑↓` | 移动结果，右侧实时刷新 trace 与详情 |
 | `o` | 用 `$EDITOR` 打开当前文件 |
 | `a` / `f2` | 打开「全部片段」：按 rowid 浏览库里所有 chunk（`n`/`p` 翻页，`esc` 返回） |
@@ -268,7 +269,11 @@ shibei ui                       # 自动复用/拉起 sidecar
 
 按 `a` 进入「全部片段」：直接按 rowid 分页浏览库里已有的所有 chunk（每页 200 条），
 用来核对切分是否合理、内容有没有进库。底层是 `GET /v1/chunks?limit=&offset=&source=&tag=`，
-不经过 BM25 / 向量排序。
+不经过 BM25 / 向量排序。片段页按键：`n`/`p` 翻页、`r` 刷新、`ctrl+r` 强制重建当前文件、
+`o` 打开文件、`esc` 返回。
+
+召回页按 `ctrl+s` 会把「当前查询 + top3 文件名」追加到 `~/.shibei/eval/golden.yaml`，
+之后直接跑 `python scripts/eval_retrieval.py` 就能做 recall@k / MRR 回归。
 
 ## 多库：一套接口服务多个知识库
 

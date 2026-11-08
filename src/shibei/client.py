@@ -334,6 +334,21 @@ class ShibeiClient:
     def list_sources(self, limit: int = 0, offset: int = 0) -> dict:
         return self._get("/v1/sources", {"limit": limit, "offset": offset})
 
+    def reindex(self, source: str, timeout: float = 300) -> dict:
+        """强制重建单个文件（不影响其他文件）。"""
+        return self._post("/v1/reindex", {"source": source}, timeout=timeout)
+
+    def save_eval_sample(
+        self,
+        query: str,
+        expect: 'list[str] | None' = None,
+        path: 'str | None' = None,
+    ) -> dict:
+        body: dict[str, Any] = {"query": query, "expect": list(expect or [])}
+        if path:
+            body["path"] = path
+        return self._post("/v1/eval/save", body)
+
     def list_chunks(
         self,
         limit: int = 200,

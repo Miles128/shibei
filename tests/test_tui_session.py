@@ -47,6 +47,14 @@ class FakeClient:
         self.calls.append(kwargs)
         return self.payload
 
+    def reindex(self, source: str, timeout: float = 300) -> dict:
+        self.reindexed = [source]
+        return {"files": 1, "chunks": 1}
+
+    def save_eval_sample(self, query: str, expect=None, path=None) -> dict:
+        self.eval_saved = {"query": query, "expect": list(expect or [])}
+        return {"path": "/tmp/golden.yaml", "queries": 1, "updated": False}
+
     def list_chunks(
         self,
         limit: int = 200,
@@ -182,3 +190,17 @@ def test_single_brain_cycle_is_noop():
     session.brains = ["default"]
     session.state.brain = "default"
     assert session.cycle_brain() == "default"
+
+
+def test_result_basenames_and_eval_sample():
+    client = FakeClient(PAYLOAD)
+    session = RecallSession(client=client)
+    session.run("Redis")
+
+    assert session.result_basenames() == ["redis.md"]
+    info = session.save_eval_sample(["redis.md"])
+    assert info["queries"] == 1
+    assert client.eval_saved == {"query": "Redis", "expect": ["redis.md"]}
+
+    session.reindex("/redis.md")
+    assert client.reindexed == ["/redis.md"]

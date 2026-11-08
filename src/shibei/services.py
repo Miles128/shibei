@@ -1,6 +1,7 @@
 """Shibei 服务层 — 统一入口"""
 
 import logging
+from pathlib import Path
 from collections.abc import Callable
 
 from .config import load_config
@@ -126,6 +127,56 @@ class Shibei:
         return Importer(self.config).run(
             dirs, full=full, file_pattern=file_pattern, progress=progress
         )
+
+    def reindex(self, source: str) -> dict:
+        """强制重建单个文件（跳过 manifest 哈希判断，不影响其他文件）。"""
+        from .importer import Importer
+
+        if not source:
+            raise ValueError("source 不能为空")
+        return Importer(self.config).run(
+            dirs=[source], force_files=[source], prune=False
+        )
+
+    def save_eval_sample(
+        self,
+        query: str,
+        expect: 'list[str] | None' = None,
+        path: 'str | None' = None,
+    ) -> dict:
+        """把一次查询写入 scripts/eval_retrieval.py 的 golden.yaml。"""
+        import yaml
+
+        query = (query or "").strip()
+        if not query:
+            raise ValueError("query 不能为空")
+        target = (
+            Path(path)
+            if path
+            else Path.home() / ".shibei" / "eval" / "golden.yaml"
+        )
+        data: dict = {}
+        if target.exists():
+            data = yaml.safe_load(target.read_text(encoding="utf-8")) or {}
+        queries = list(data.get("queries") or [])
+        expect = [str(item) for item in (expect or [])]
+
+        updated = False
+        for item in queries:
+            if item.get("query") == query:
+                item["expect"] = expect
+                updated = True
+                break
+        if not updated:
+            queries.append({"query": query, "expect": expect})
+
+        data["queries"] = queries
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(
+            yaml.safe_dump(data, allow_unicode=True, sort_keys=False),
+            encoding="utf-8",
+        )
+        return {"path": str(target), "queries": len(queries), "updated": updated}
 
     def list_sources(self, limit: int = 0, offset: int = 0) -> dict:
         from .importer import list_sources

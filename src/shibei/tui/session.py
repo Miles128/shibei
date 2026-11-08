@@ -7,6 +7,7 @@ Textual / Tkinter / PySide6 都只做「渲染 + 输入映射」，
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Protocol
 
 # 可三态切换的检索开关：None=跟随 config，True=强制开，False=强制关
@@ -167,6 +168,27 @@ class RecallSession:
         return self._client.list_chunks(
             limit=limit, offset=offset, source=source, tag=tag
         )
+
+    # ---------- 运维动作 ----------
+
+    def reindex(self, source: str) -> dict:
+        if self._client is None:
+            raise RuntimeError("sidecar 未连接")
+        return self._client.reindex(source)
+
+    def save_eval_sample(self, expect: 'list[str] | None' = None) -> dict:
+        if self._client is None:
+            raise RuntimeError("sidecar 未连接")
+        return self._client.save_eval_sample(self.state.query, expect or [])
+
+    def result_basenames(self, limit: int = 3) -> list[str]:
+        names: list[str] = []
+        for item in self.results()[:limit]:
+            path = item.get("file_path") or item.get("source") or ""
+            name = Path(str(path)).name
+            if name and name not in names:
+                names.append(name)
+        return names
 
     # ---------- 投影 ----------
 

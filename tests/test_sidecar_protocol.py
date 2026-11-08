@@ -153,3 +153,24 @@ def test_chunks_endpoint_lists_all(sidecar_server):
     assert body["total"] >= 1
     assert body["items"]
     assert "text" in body["items"][0]
+
+
+def test_reindex_and_eval_endpoints(sidecar_server, tmp_path):
+    info, cfg_path = sidecar_server
+    _http(info["base_url"], info["token"], "POST", "/v1/import", {})
+
+    source = str(Path(cfg_path).parent / "notes" / "redis.md")
+    status, rebuilt = _http(
+        info["base_url"], info["token"], "POST", "/v1/reindex", {"source": source}
+    )
+    assert status == 200
+    assert rebuilt["files"] == 1
+
+    golden = str(tmp_path / "golden.yaml")
+    status, saved = _http(
+        info["base_url"], info["token"], "POST", "/v1/eval/save",
+        {"query": "Redis 布隆", "expect": ["redis.md"], "path": golden},
+    )
+    assert status == 200
+    assert saved["queries"] == 1
+    assert Path(golden).exists()

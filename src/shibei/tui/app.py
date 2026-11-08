@@ -50,6 +50,7 @@ class RecallApp(App):
         Binding("f2", "browse", "全部片段"),
         Binding("b", "cycle_brain", "切换库"),
         Binding("ctrl+r", "rerun", "重跑"),
+        Binding("ctrl+s", "save_eval", "存评测"),
         Binding("escape", "focus_results", "离开输入"),
         Binding("o", "open_file", "打开文件"),
         Binding("1", "toggle_flag('rewrite')", "改写"),
@@ -256,6 +257,27 @@ class RecallApp(App):
 
     def action_toggle_flag(self, flag: str) -> None:
         self.toggle_flag(flag)
+
+    def action_save_eval(self) -> None:
+        if self.session is None or self.session.state.result is None:
+            self._set_error("没有可保存的召回结果")
+            return
+        self.save_eval(self.session.result_basenames())
+
+    @work(thread=True, group="eval")
+    def save_eval(self, expect: 'list[str]') -> None:
+        assert self.session is not None
+        try:
+            info = self.session.save_eval_sample(expect)
+        except Exception as exc:  # noqa: BLE001
+            self.call_from_thread(self._set_error, f"保存评测样本失败：{exc}")
+            return
+        self.call_from_thread(self._on_eval_saved, info)
+
+    def _on_eval_saved(self, info: dict) -> None:
+        self.query_one("#summary", Static).update(
+            f'已写入评测集 {info.get("path")}（{info.get("queries")} 条）'
+        )
 
     def action_rerun(self) -> None:
         if self.session and self.session.state.query:

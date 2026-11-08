@@ -32,6 +32,8 @@ WRITE_PATHS = {
     "/v1/consolidate/apply",
     "/v1/clean",
     "/v1/auto-remember",
+    "/v1/reindex",
+    "/v1/eval/save",
 }
 # 注册表写操作：不按库加锁，走 registry_lock
 REGISTRY_PATHS = {"/v1/brains", "/v1/brains/remove"}
@@ -369,6 +371,17 @@ def _dispatch(
         return 200, brain.list_sources(
             limit=int(qs.get("limit", 0)),
             offset=int(qs.get("offset", 0)),
+        )
+    if method == "POST" and path == "/v1/reindex":
+        source = str(body.get("source") or "").strip()
+        if not source:
+            return _invalid("source 不能为空")
+        return 200, brain.reindex(source)
+    if method == "POST" and path == "/v1/eval/save":
+        return 200, brain.save_eval_sample(
+            query=str(body.get("query") or ""),
+            expect=list(body.get("expect") or []),
+            path=body.get("path") or None,
         )
     if method == "GET" and path == "/v1/chunks":
         return 200, brain.list_chunks(

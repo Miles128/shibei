@@ -37,7 +37,9 @@ class Importer:
 
     def run(self, dirs: 'list[str] | None' = None, full: bool = False,
             file_pattern: 'str | None' = None,
-            progress: 'Callable[[int, int], None] | None' = None) -> dict:
+            progress: 'Callable[[int, int], None] | None' = None,
+            force_files: 'list[str] | None' = None,
+            prune: bool = True) -> dict:
         """导入文档。
 
         Args:
@@ -58,6 +60,12 @@ class Importer:
         warnings: list[str] = []
         for d in scan_dirs:
             p = Path(d).expanduser()
+            if p.is_file():
+                if p.suffix.lower() in extensions and (
+                    not file_pattern or fnmatch.fnmatch(p.name, file_pattern)
+                ):
+                    files.append(p)
+                continue
             if p.exists():
                 for ext in extensions:
                     candidates: list[Path] = list(p.rglob(f"*{ext}"))
@@ -73,12 +81,24 @@ class Importer:
         current_files = {str(f): f for f in sorted(files)}
         manifest = Manifest(self.cfg.db_path_expanded)
 
+        forced_paths = {
+            str(Path(f).expanduser()) for f in (force_files or [])
+        }
         if full:
             to_add = list(current_files.values())
             to_update: list[Path] = []
             to_remove = list(manifest.all_paths() - set(current_files.keys()))
         else:
             to_add, to_update, to_remove = manifest.classify(current_files)
+            forced = [
+                current_files[path]
+                for path in forced_paths
+                if path in current_files
+            ]
+            to_add = [path for path in to_add if path not in forced]
+            to_update = list(dict.fromkeys(list(to_update) + forced))
+        if not prune:
+            to_remove = []
 
         changed = to_add + to_update
         skipped = len(current_files) - len(changed)

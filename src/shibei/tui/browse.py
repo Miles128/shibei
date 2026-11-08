@@ -40,6 +40,7 @@ class BrowseScreen(Screen):
         Binding("end", "last_page", "末页"),
         Binding("o", "open_file", "打开文件"),
         Binding("r", "reload", "刷新"),
+        Binding("ctrl+r", "reindex_file", "重建文件"),
     ]
 
     def __init__(self, session: RecallSession):
@@ -151,6 +152,33 @@ class BrowseScreen(Screen):
             return
         last = ((self._total - 1) // PAGE_SIZE) * PAGE_SIZE
         self._load(last)
+
+    def action_reindex_file(self) -> None:
+        table = self.query_one("#chunks", DataTable)
+        index = table.cursor_row
+        if not 0 <= index < len(self._items):
+            return
+        item = self._items[index]
+        source = str(item.get("source") or item.get("file_path") or "")
+        if not source:
+            return
+        self.query_one("#browse-summary", Static).update(f"重建中：{source}")
+        self._reindex(source, self._offset)
+
+    @work(thread=True, exclusive=True, group="reindex")
+    def _reindex(self, source: str, offset: int) -> None:
+        try:
+            info = self.session.reindex(source)
+        except Exception as exc:  # noqa: BLE001
+            self.app.call_from_thread(self._set_error, str(exc))
+            return
+        self.app.call_from_thread(self._after_reindex, info, offset)
+
+    def _after_reindex(self, info: dict, offset: int) -> None:
+        self.query_one("#browse-summary", Static).update(
+            f'重建完成：{info.get("files", 0)} 文件 / {info.get("chunks", 0)} chunks'
+        )
+        self._load(offset)
 
     def action_reload(self) -> None:
         self._load(self._offset)
