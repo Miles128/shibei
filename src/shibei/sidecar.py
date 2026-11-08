@@ -253,9 +253,7 @@ def _recall_payload(state: SidecarState, body: dict) -> tuple[int, Any]:
         for item in payload.get("results") or []:
             item.setdefault("brain", name)
         return 200, payload
-    return 200, recall_federated(
-        [(name, brain.config) for name, brain in pairs], **kwargs
-    )
+    return 200, recall_federated(pairs, **kwargs)
 
 
 def _dispatch(

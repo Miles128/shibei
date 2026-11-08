@@ -11,10 +11,19 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
+from ragkit.fusion import rrf_gain
+
 from .config import Config
 from .recall import recall
 
 RRF_K = 60
+
+
+def _run_brain(engine: Any, kwargs: dict) -> dict:
+    """本地 Config 走 recall()，远程/已实例化的 brain 直接调 recall。"""
+    if hasattr(engine, "recall"):
+        return engine.recall(**kwargs)
+    return recall(engine, **kwargs)
 
 
 def _dedupe_key(item: dict) -> tuple[str, str]:
@@ -24,7 +33,7 @@ def _dedupe_key(item: dict) -> tuple[str, str]:
 
 
 def recall_federated(
-    brains: 'list[tuple[str, Config]]',
+    brains: 'list[tuple[str, Any]]',
     query: 'str | None' = None,
     message: str = "",
     limit: int = 5,
@@ -73,8 +82,8 @@ def recall_federated(
     names = [name for name, _ in brains]
     with ThreadPoolExecutor(max_workers=min(8, len(brains))) as pool:
         futures = [
-            (name, pool.submit(recall, cfg, **kwargs))
-            for name, cfg in brains
+            (name, pool.submit(_run_brain, engine, kwargs))
+            for name, engine in brains
         ]
         for name, future in futures:
             try:
@@ -89,7 +98,7 @@ def recall_federated(
             continue
         for rank, item in enumerate(brain_env.get("results") or [], start=1):
             key = _dedupe_key(item)
-            gain = 1.0 / (k + rank)
+            gain = rrf_gain(rank, k)
             current = merged.get(key)
             if current is None:
                 copy = dict(item)

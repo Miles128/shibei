@@ -254,6 +254,7 @@ class ShibeiClient:
         write_hints: bool = False,
         trace: bool = False,
         full_text: bool = False,
+        mmr: bool = False,
         rewrite: bool | None = None,
         llm_rewrite: bool | None = None,
         expand: bool | None = None,
@@ -278,6 +279,7 @@ class ShibeiClient:
             "write_hints": write_hints,
             "trace": trace,
             "full_text": full_text,
+            "mmr": mmr,
         }
         if brain is not None:
             body["brain"] = brain
@@ -321,11 +323,12 @@ class ShibeiClient:
         full: bool = False,
         file_pattern: str | None = None,
         progress=None,
+        timeout: float = 120,
     ) -> dict:
         return self._post(
             "/v1/import",
             {"dirs": dirs, "full": full, "file_pattern": file_pattern},
-            timeout=120,
+            timeout=timeout,
         )
 
     def list_sources(self, limit: int = 0, offset: int = 0) -> dict:

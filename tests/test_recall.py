@@ -84,6 +84,25 @@ def test_recall_rejects_unknown_mode(cfg):
         recall(cfg, "Redis", mode="nope")
 
 
+def test_recall_mmr_dedupes_near_duplicates(cfg):
+    # cfg 里有 Redis 长文与无关的 AI 文档；再加一条与 Redis 高度重复的片段
+    from ragkit.mmr import mmr_select
+
+    items = [
+        {"text": "Redis 缓存穿透要用布隆过滤器", "score": 0.9},
+        {"text": "Redis 缓存穿透要用布隆过滤器方案", "score": 0.88},
+        {"text": "Kafka 分区与消费者组", "score": 0.5},
+    ]
+    picked = mmr_select(items, 2)
+    assert len(picked) == 2
+    assert picked[1]["text"].startswith("Kafka")
+
+    out = recall(cfg, "Redis 缓存", mode="raw", mmr=True)
+    assert out["total"] >= 1
+    ranks = [item["rank"] for item in out["results"]]
+    assert ranks == list(range(1, len(ranks) + 1))
+
+
 def test_degraded_reports_missing_stages(cfg):
     from shibei.recall import _degraded
 

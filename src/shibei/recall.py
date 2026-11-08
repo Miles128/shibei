@@ -141,6 +141,7 @@ def recall(
     write_hints: bool = False,
     trace: bool = False,
     full_text: bool = False,
+    mmr: bool = False,
     rewrite: 'bool | None' = None,
     llm_rewrite: 'bool | None' = None,
     expand: 'bool | None' = None,
@@ -201,6 +202,15 @@ def recall(
 
     if full_text and results:
         _apply_full_text(effective_cfg, results)
+
+    if mmr and len(results) > 1:
+        from ragkit.mmr import mmr_select
+
+        results = mmr_select(
+            results, limit, relevance_key="score", text_key="text"
+        )
+        for index, item in enumerate(results, start=1):
+            item["rank"] = index
 
     if trace and results:
         from .tokenizer import query_terms
